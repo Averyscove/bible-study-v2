@@ -2471,7 +2471,7 @@
     EmailAuthProvider, reauthenticateWithCredential, deleteUser
   } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js';
   import {
-    getFirestore, doc, getDoc, setDoc, deleteDoc, updateDoc, serverTimestamp,
+    getFirestore, initializeFirestore, doc, getDoc, setDoc, deleteDoc, updateDoc, serverTimestamp,
     collection, query, where, orderBy, limit, onSnapshot, getDocs, addDoc, Timestamp
   } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js';
 
@@ -2488,7 +2488,23 @@
   try {
     const app = initializeApp(firebaseConfig);
     auth = getAuth(app);
-    db = getFirestore(app);
+    // Firestore JS SDK uses WebChannel/streaming by default, which has known
+    // bugs in WKWebView (Capacitor's iOS WebView) and some other restrictive
+    // environments. experimentalForceLongPolling makes it use long-polling
+    // (plain HTTPS) instead — slower but reliable in any WebView. This is
+    // the documented fix referenced in Firebase docs, GitHub issues, and
+    // Capacitor community guides.
+    try {
+      db = initializeFirestore(app, {
+        experimentalForceLongPolling: true,
+        useFetchStreams: false
+      });
+    } catch (initErr) {
+      // If initializeFirestore fails (e.g. Firestore was already initialized
+      // from a hot reload), fall back to getFirestore which returns the
+      // existing instance.
+      db = getFirestore(app);
+    }
     setPersistence(auth, browserLocalPersistence).catch(() => {});
   } catch (e) {
     console.warn('Firebase init failed', e);
@@ -2507,25 +2523,89 @@
     return err?.message || 'Something went wrong. Try again.';
   }
 
+  // ──────────────────────────────────────────────────────────────────────
+  // Auth strategy:
+  // - On native iOS (Capacitor), Firebase JS SDK auth calls hang in WKWebView.
+  //   Use the @capacitor-firebase/authentication plugin, which talks to
+  //   the native iOS Firebase SDK. The plugin auto-syncs auth state with
+  //   the JS SDK so Firestore continues to work.
+  // - On web (mobile Safari, desktop), the JS SDK works fine. Use it directly.
+  // ──────────────────────────────────────────────────────────────────────
+  const isNativeApp = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  const FBAuthPlugin = isNativeApp && window.Capacitor?.Plugins?.FirebaseAuthentication
+    ? window.Capacitor.Plugins.FirebaseAuthentication
+    : null;
+
+  // Plugin error shape is slightly different — normalize for friendlyError
+  function pluginErr(e) {
+    const code = e?.code || '';
+    const message = e?.message || '';
+    return friendlyError({ code, message });
+  }
+
   window.bsAuth = {
     available: !!auth,
+    _native: !!FBAuthPlugin,
     signIn: async (email, password) => {
-      try { return { user: (await signInWithEmailAndPassword(auth, email, password)).user }; }
-      catch (e) { return { error: friendlyError(e) }; }
+      if (FBAuthPlugin) {
+        try {
+          const r = await FBAuthPlugin.signInWithEmailAndPassword({ email, password });
+          return { user: r.user };
+        } catch (e) { return { error: pluginErr(e) }; }
+      }
+      try {
+        const r = await signInWithEmailAndPassword(auth, email, password);
+        return { user: r.user };
+      } catch (e) { return { error: friendlyError(e) }; }
     },
     signUp: async (email, password) => {
-      try { return { user: (await createUserWithEmailAndPassword(auth, email, password)).user }; }
-      catch (e) { return { error: friendlyError(e) }; }
+      if (FBAuthPlugin) {
+        try {
+          const r = await FBAuthPlugin.createUserWithEmailAndPassword({ email, password });
+          return { user: r.user };
+        } catch (e) { return { error: pluginErr(e) }; }
+      }
+      try {
+        const r = await createUserWithEmailAndPassword(auth, email, password);
+        return { user: r.user };
+      } catch (e) { return { error: friendlyError(e) }; }
     },
-    signOut: () => signOut(auth),
+    signOut: () => {
+      if (FBAuthPlugin) return FBAuthPlugin.signOut();
+      return signOut(auth);
+    },
     sendReset: async (email) => {
+      if (FBAuthPlugin) {
+        try { await FBAuthPlugin.sendPasswordResetEmail({ email }); return { ok: true }; }
+        catch (e) { return { error: pluginErr(e) }; }
+      }
       try { await sendPasswordResetEmail(auth, email); return { ok: true }; }
       catch (e) { return { error: friendlyError(e) }; }
     },
-    onAuthChanged: (cb) => onAuthStateChanged(auth, cb),
+    onAuthChanged: (cb) => {
+      if (FBAuthPlugin) {
+        // Plugin's listener fires on native auth state changes
+        FBAuthPlugin.addListener('authStateChange', (event) => cb(event?.user || null));
+        // Also fire current state immediately so init flow knows where to start
+        FBAuthPlugin.getCurrentUser().then((r) => cb(r?.user || null)).catch(() => cb(null));
+        return;
+      }
+      onAuthStateChanged(auth, cb);
+    },
     // Re-verify the user's password before destructive actions (account deletion).
     // Firebase requires recent re-authentication for delete; this gives us that proof.
     reauthenticate: async (password) => {
+      if (FBAuthPlugin) {
+        // The native plugin doesn't expose reauthenticate directly; signing in
+        // again with the same password achieves the same recent-auth proof.
+        try {
+          const cur = await FBAuthPlugin.getCurrentUser();
+          const email = cur?.user?.email;
+          if (!email) return { error: 'Not signed in.' };
+          await FBAuthPlugin.signInWithEmailAndPassword({ email, password });
+          return { ok: true };
+        } catch (e) { return { error: pluginErr(e) }; }
+      }
       try {
         const user = auth.currentUser;
         if (!user || !user.email) return { error: 'Not signed in.' };
@@ -2537,6 +2617,12 @@
     // Permanently deletes the Firebase Auth user. Caller is responsible for
     // purging Firestore content first (see bsCommunityDb.deleteMyAccountData).
     deleteCurrentUser: async () => {
+      if (FBAuthPlugin) {
+        try {
+          await FBAuthPlugin.deleteUser();
+          return { ok: true };
+        } catch (e) { return { error: pluginErr(e) }; }
+      }
       try {
         const user = auth.currentUser;
         if (!user) return { error: 'Not signed in.' };
@@ -3774,9 +3860,7 @@ async function loadCommunityProfile() {
     state.community.memberships[m.gid] = { role: m.role, joinedAt: Date.now() };
   }
   state.community.blockedUids = blockedUids || [];
-  // Persist locally so we don't flash the setup screen on next reload before Firestore replies
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
-  // Re-render any view that depends on membership (chapter share, community list, group page)
   render();
 }
 
