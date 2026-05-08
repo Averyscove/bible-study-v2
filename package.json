@@ -1,0 +1,40 @@
+{
+  "name": "starting-with-christ",
+  "version": "0.1.0",
+  "description": "Starting with Christ — Bible study app with reading plan, reflection, and a small community.",
+  "main": "index.html",
+  "scripts": {
+    "build": "rm -rf dist && mkdir -p dist && cp index.html sw.js privacy.html terms.html dist/",
+    "ios:sync": "npm run build && npx cap sync ios",
+    "ios:open": "npm run ios:sync && npx cap open ios"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Averyscove/bible-study-v2.git"
+  },
+  "keywords": [
+    "bible",
+    "devotional",
+    "christian",
+    "reading-plan",
+    "community",
+    "capacitor",
+    "ios",
+    "pwa"
+  ],
+  "author": "Averyscove",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Averyscove/bible-study-v2/issues"
+  },
+  "homepage": "https://github.com/Averyscove/bible-study-v2#readme",
+  "dependencies": {
+    "@capacitor/core": "^8.3.2",
+    "@capacitor/ios": "^8.3.2"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^8.3.2"
+  }
+}

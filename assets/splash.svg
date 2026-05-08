@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="2732" height="2732" viewBox="0 0 2732 2732">
+  <!-- Splash background — warm cream paper, matches the in-app theme -->
+  <rect width="2732" height="2732" fill="#fbf4e3"/>
+  <!-- Centered J monogram, smaller than the icon since splashes show full screen -->
+  <g transform="translate(1366 1366)">
+    <circle r="320" fill="#4a2c1f"/>
+    <text x="0" y="120"
+          font-family="Iowan Old Style, Georgia, 'Times New Roman', serif"
+          font-size="500"
+          font-weight="700"
+          text-anchor="middle"
+          fill="#fbf4e3">J</text>
+  </g>
+  <!-- App name below -->
+  <text x="1366" y="1850"
+        font-family="Iowan Old Style, Georgia, 'Times New Roman', serif"
+        font-size="92"
+        font-weight="600"
+        text-anchor="middle"
+        fill="#4a2c1f">Starting with Christ</text>
+</svg>
