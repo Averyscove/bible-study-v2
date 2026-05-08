@@ -1,0 +1,200 @@
+// Bible Study — Firestore security rules
+// Project: bible-study-25f61
+//
+// Covers v1 (existing /users/{uid}) and v2 (community: profiles, groups, members,
+// messages, posts, replies, reactions). Paste this entire file into the Firebase
+// Console (Firestore → Rules → Edit → Publish) when deploying v2.
+//
+// IMPORTANT: the v1 rule for /users/{uid} is preserved verbatim. Do not strip it.
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ────────────────────────────────────────────────────────────────
+    // v1 — personal devotional state. UNCHANGED. Owner-only.
+    // ────────────────────────────────────────────────────────────────
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // v2 — public profile per user
+    // ────────────────────────────────────────────────────────────────
+    match /profiles/{uid} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null
+        && request.auth.uid == uid
+        && validProfile(request.resource.data);
+      allow delete: if false;
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // v2 — groups
+    // ────────────────────────────────────────────────────────────────
+    match /groups/{gid} {
+      allow read: if request.auth != null;
+
+      allow create: if request.auth != null
+        && validGroup(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid;
+
+      allow update: if request.auth != null
+        && isGroupOwner(gid, request.auth.uid)
+        && validGroup(request.resource.data);
+
+      allow delete: if request.auth != null
+        && isGroupOwner(gid, request.auth.uid);
+
+      // Membership
+      match /members/{uid} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null
+          && request.auth.uid == uid
+          && validMember(request.resource.data);
+        allow update: if request.auth != null
+          && (request.auth.uid == uid || isGroupOwner(gid, request.auth.uid))
+          && validMember(request.resource.data);
+        allow delete: if request.auth != null
+          && (request.auth.uid == uid || isGroupOwner(gid, request.auth.uid));
+      }
+
+      // Chat messages — fast tempo, real-time stream
+      match /messages/{mid} {
+        allow read: if isMember(gid, request.auth.uid);
+        allow create: if isMember(gid, request.auth.uid)
+          && validMessage(request.resource.data)
+          && request.resource.data.authorUid == request.auth.uid;
+        // Authors can edit their own message within 5 minutes; owners can delete
+        allow update: if request.auth != null
+          && resource.data.authorUid == request.auth.uid
+          && validMessage(request.resource.data)
+          && (request.time.toMillis() - resource.data.createdAt.toMillis()) < 300000;
+        allow delete: if request.auth != null
+          && (resource.data.authorUid == request.auth.uid
+              || isGroupOwner(gid, request.auth.uid));
+
+        // Reactions on chat messages
+        match /reactions/{uid} {
+          allow read: if isMember(gid, request.auth.uid);
+          allow create, update: if request.auth != null
+            && request.auth.uid == uid
+            && request.resource.data.type in ['heart', 'amen', 'praying'];
+          allow delete: if request.auth != null
+            && request.auth.uid == uid;
+        }
+      }
+
+      // Discussion posts — slower, threaded
+      match /posts/{pid} {
+        allow read: if isMember(gid, request.auth.uid);
+        allow create: if isMember(gid, request.auth.uid)
+          && validPost(request.resource.data)
+          && request.resource.data.authorUid == request.auth.uid;
+        allow update: if request.auth != null
+          && resource.data.authorUid == request.auth.uid
+          && validPost(request.resource.data)
+          && (request.time.toMillis() - resource.data.createdAt.toMillis()) < 300000;
+        allow delete: if request.auth != null
+          && (resource.data.authorUid == request.auth.uid
+              || isGroupOwner(gid, request.auth.uid));
+
+        // Replies on discussion posts
+        match /replies/{rid} {
+          allow read: if isMember(gid, request.auth.uid);
+          allow create: if isMember(gid, request.auth.uid)
+            && validReply(request.resource.data)
+            && request.resource.data.authorUid == request.auth.uid;
+          allow update: if request.auth != null
+            && resource.data.authorUid == request.auth.uid
+            && validReply(request.resource.data)
+            && (request.time.toMillis() - resource.data.createdAt.toMillis()) < 300000;
+          allow delete: if request.auth != null
+            && (resource.data.authorUid == request.auth.uid
+                || isGroupOwner(gid, request.auth.uid));
+        }
+
+        // Reactions on discussion posts
+        match /reactions/{uid} {
+          allow read: if isMember(gid, request.auth.uid);
+          allow create, update: if request.auth != null
+            && request.auth.uid == uid
+            && request.resource.data.type in ['heart', 'amen', 'praying'];
+          allow delete: if request.auth != null
+            && request.auth.uid == uid;
+        }
+      }
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // Helper functions
+    // ────────────────────────────────────────────────────────────────
+
+    function isMember(gid, uid) {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/groups/$(gid)/members/$(uid));
+    }
+
+    function isGroupOwner(gid, uid) {
+      return exists(/databases/$(database)/documents/groups/$(gid)/members/$(uid))
+        && get(/databases/$(database)/documents/groups/$(gid)/members/$(uid)).data.role == 'owner';
+    }
+
+    function validProfile(data) {
+      return data.displayName is string
+        && data.displayName.size() >= 2
+        && data.displayName.size() <= 32
+        && (!('bio' in data) || (data.bio is string && data.bio.size() <= 280))
+        && (!('favoriteBooks' in data) || data.favoriteBooks is list)
+        && (!('level' in data) || data.level in ['first-time', 'going-deeper', 'serious-study', 'unspecified']);
+    }
+
+    function validGroup(data) {
+      return data.name is string
+        && data.name.size() >= 3
+        && data.name.size() <= 60
+        && data.description is string
+        && data.description.size() <= 1000
+        && data.visibility == 'public'
+        && (!('focusBooks' in data) || data.focusBooks is list)
+        && (!('level' in data) || data.level in ['first-time', 'going-deeper', 'serious-study', 'all']);
+    }
+
+    function validMember(data) {
+      return data.role in ['owner', 'moderator', 'member']
+        && data.joinedAt is timestamp
+        && data.displayName is string
+        && data.displayName.size() <= 32;
+    }
+
+    function validMessage(data) {
+      return data.body is string
+        && data.body.size() >= 1
+        && data.body.size() <= 2000
+        && data.authorUid is string
+        && data.authorName is string
+        && data.createdAt is timestamp;
+    }
+
+    function validPost(data) {
+      return data.body is string
+        && data.body.size() >= 1
+        && data.body.size() <= 2000
+        && data.authorUid is string
+        && data.authorName is string
+        && data.createdAt is timestamp
+        && (!('chapterId' in data) || data.chapterId is string)
+        && (!('verseRef' in data) || data.verseRef is string);
+    }
+
+    function validReply(data) {
+      return data.body is string
+        && data.body.size() >= 1
+        && data.body.size() <= 2000
+        && data.authorUid is string
+        && data.authorName is string
+        && data.createdAt is timestamp;
+    }
+  }
+}
