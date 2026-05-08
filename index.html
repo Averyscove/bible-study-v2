@@ -1702,25 +1702,125 @@
   }
 
   /* Chat tab */
-  .group-chat { padding: 4px 0; }
-  .group-chat-message {
-    border: 1px solid var(--rule, rgba(0,0,0,0.1));
-    border-radius: 12px;
-    padding: 12px 14px;
-    margin-bottom: 10px;
-    background: var(--surface, transparent);
-    max-width: 90%;
+  .group-chat {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 320px);
+    min-height: 360px;
+    max-height: 70vh;
   }
-  .group-chat-author {
-    font-size: 12px;
+  .chat-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 2px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    scroll-behavior: smooth;
+  }
+  .chat-msg {
+    position: relative;
+    border: 1px solid var(--rule, rgba(0,0,0,0.1));
+    border-radius: 14px;
+    padding: 9px 14px 10px;
+    background: var(--surface, transparent);
+    max-width: 88%;
+    align-self: flex-start;
+    word-wrap: break-word;
+  }
+  .chat-msg.own {
+    align-self: flex-end;
+    background: var(--ink);
+    color: var(--paper, #fbf4e3);
+    border-color: var(--ink);
+  }
+  .chat-msg.seed {
+    background: var(--surface-2, rgba(0,0,0,0.025));
+    font-style: italic;
+    border-style: dashed;
+    align-self: stretch;
+    max-width: 100%;
+  }
+  .chat-msg-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 3px;
+  }
+  .chat-msg-author {
+    font-size: 11.5px;
     font-weight: 600;
     color: var(--ink);
-    margin-bottom: 4px;
   }
-  .group-chat-body {
+  .chat-msg.own .chat-msg-author { color: var(--paper, #fbf4e3); opacity: 0.85; }
+  .chat-msg-time {
+    font-size: 10.5px;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .chat-msg.own .chat-msg-time { color: var(--paper, #fbf4e3); opacity: 0.6; }
+  .chat-msg-body {
     font-size: 14.5px;
-    line-height: 1.5;
+    line-height: 1.45;
+    color: inherit;
+    white-space: pre-wrap;
+  }
+  .chat-msg-del {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    background: transparent;
+    border: none;
+    color: inherit;
+    opacity: 0.4;
+    font-size: 16px;
+    line-height: 1;
+    padding: 4px 6px;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  .chat-msg-del:hover { opacity: 1; background: rgba(0,0,0,0.1); }
+  .chat-msg.own .chat-msg-del:hover { background: rgba(255,255,255,0.18); }
+
+  /* Chat composer (fixed-height single-line input + send button) */
+  .chat-composer {
+    display: flex;
+    gap: 8px;
+    padding: 10px 4px 4px;
+    border-top: 1px solid var(--rule, rgba(0,0,0,0.1));
+    margin-top: 8px;
+  }
+  .chat-composer input {
+    flex: 1;
+    border: 1px solid var(--rule, rgba(0,0,0,0.18));
+    background: var(--surface, transparent);
     color: var(--ink);
+    border-radius: 999px;
+    padding: 9px 16px;
+    font: inherit;
+    font-size: 15px;
+    min-width: 0;
+  }
+  .chat-composer input:focus {
+    outline: 2px solid var(--ink-faint);
+    outline-offset: 1px;
+  }
+  .chat-composer .btn-primary {
+    padding: 8px 18px;
+    border-radius: 999px;
+    font-size: 14px;
+  }
+  .chat-not-member {
+    text-align: center;
+    font-family: var(--serif);
+    font-style: italic;
+    color: var(--ink-faint);
+    font-size: 13.5px;
+    padding: 12px;
+    border-top: 1px solid var(--rule, rgba(0,0,0,0.1));
+    margin-top: 8px;
   }
 
   .group-empty-state {
@@ -2895,6 +2995,20 @@ async function setupCommunityListeners(gid) {
     if (view.name === 'community-group' && view.groupSlug === gid) render();
   });
   communityListeners.set(`posts:${gid}`, unsubPosts);
+
+  // Listen to chat messages (descending order, newest first; we reverse for display).
+  const unsubMessages = window.bsCommunityDb.listenToMessages(gid, (messages) => {
+    communityCache.messages[gid] = messages;
+    if (view.name === 'community-group' && view.groupSlug === gid && view.groupTab === 'chat') {
+      render();
+      // Auto-scroll the chat to the bottom on new messages
+      requestAnimationFrame(() => {
+        const list = document.querySelector('.chat-list');
+        if (list) list.scrollTop = list.scrollHeight;
+      });
+    }
+  });
+  communityListeners.set(`messages:${gid}`, unsubMessages);
 
   // Refresh member count and current user's membership status
   refreshGroupMembership(gid);
@@ -4237,15 +4351,60 @@ function renderCommunityGroup(slug, tab) {
       ${startersHtml}
     `;
   } else {
+    // Chat tab — descending from Firestore, reversed here for chronological display
+    const rawMessages = communityCache.messages[slug] || [];
+    const messages = [...rawMessages].reverse(); // oldest → newest
+    const messagesHtml = messages.map(m => {
+      const ts = m.createdAt?.toDate ? m.createdAt.toDate() : null;
+      const when = ts ? formatTimeAgo(ts.getTime()) : 'just now';
+      const isOwn = m.authorUid === currentUser?.uid;
+      return `
+        <div class="chat-msg ${isOwn ? 'own' : ''}" data-mid="${escape(m.id)}">
+          <div class="chat-msg-meta">
+            <span class="chat-msg-author">${escape(m.authorName || 'Unknown')}</span>
+            <span class="chat-msg-time">${escape(when)}</span>
+          </div>
+          <div class="chat-msg-body">${escape(m.body).replace(/\n/g, '<br>')}</div>
+          ${isOwn ? `<button class="chat-msg-del" data-act="delete-message" data-slug="${escape(slug)}" data-mid="${escape(m.id)}" title="Delete">×</button>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    const composer = isMember ? `
+      <form class="chat-composer" id="chat-composer" data-slug="${escape(slug)}">
+        <input
+          type="text"
+          name="body"
+          maxlength="2000"
+          placeholder="Type a message…"
+          autocomplete="off"
+          autocapitalize="sentences"
+          required
+          minlength="1">
+        <button type="submit" class="btn-primary" aria-label="Send">Send</button>
+      </form>
+    ` : `
+      <div class="chat-not-member">Join the group to send messages in chat.</div>
+    `;
+
+    const emptyState = (messages.length === 0)
+      ? `<div class="group-empty-state group-empty-soft">No chatter yet. ${isMember ? 'Be the first to say hi.' : 'Join the group to start the conversation.'}</div>`
+      : '';
+
     body = `
       <div class="group-chat">
-        <div class="group-chat-message">
-          <div class="group-chat-author">${escape(COMMUNITY_TEAM_NAME)}</div>
-          <div class="group-chat-body">${escape(g.chatOpener)}</div>
+        <div class="chat-list">
+          <div class="chat-msg seed">
+            <div class="chat-msg-meta">
+              <span class="chat-msg-author">${escape(COMMUNITY_TEAM_NAME)}</span>
+              <span class="chat-msg-time">welcome</span>
+            </div>
+            <div class="chat-msg-body">${escape(g.chatOpener)}</div>
+          </div>
+          ${emptyState}
+          ${messagesHtml}
         </div>
-        <div class="group-empty-state">
-          Live chat is landing in the next build step. For now this is what you'll see when you walk in.
-        </div>
+        ${composer}
       </div>
     `;
   }
@@ -4393,6 +4552,11 @@ function bindEvents() {
     si.focus();
     si.addEventListener('input', () => { searchState.query = si.value; rerenderSearchResults(); });
   }
+  // Chat: scroll list to bottom on every render so latest message is in view
+  const chatList = document.querySelector('.chat-list');
+  if (chatList) {
+    requestAnimationFrame(() => { chatList.scrollTop = chatList.scrollHeight; });
+  }
 }
 
 function rerenderSearchResults() {
@@ -4517,12 +4681,19 @@ function onClick(e) {
     const pid = t.dataset.pid;
     const rid = t.dataset.rid;
     if (!confirm('Delete this reply?')) return;
-    // Replies live at /groups/{slug}/posts/{pid}/replies/{rid}
-    // No dedicated wrapper yet — write directly via Firestore through bsCommunityDb's helper
-    // (We'll add a deleteReply method.)
     window.bsCommunityDb.deleteReply(slug, pid, rid).then((r) => {
       if (r.error) toast('Could not delete: ' + r.error);
       else toast('Reply deleted');
+    });
+    return;
+  }
+  if (act === 'delete-message') {
+    const slug = t.dataset.slug;
+    const mid = t.dataset.mid;
+    if (!confirm('Delete this message?')) return;
+    window.bsCommunityDb.deleteMessage(slug, mid).then((r) => {
+      if (r.error) toast('Could not delete: ' + r.error);
+      else toast('Message deleted');
     });
     return;
   }
@@ -4755,6 +4926,35 @@ function onSubmit(e) {
       form.elements.body.value = '';
       toast('Posted ✓');
       // The onSnapshot listener will re-render with the new post
+    });
+    return;
+  }
+
+  // Chat composer (group's Chat tab)
+  if (e.target.id === 'chat-composer') {
+    e.preventDefault();
+    const form = e.target;
+    const slug = form.dataset.slug;
+    const input = form.elements.body;
+    const body = input.value.trim();
+    if (!body) return;
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+    input.disabled = true;
+    window.bsCommunityDb.sendMessage(slug, {
+      authorUid: currentUser.uid,
+      authorName: state.community.profile?.displayName || 'Unknown',
+      body
+    }).then((r) => {
+      if (submitBtn) submitBtn.disabled = false;
+      input.disabled = false;
+      if (r.error) {
+        toast('Could not send: ' + r.error);
+        return;
+      }
+      input.value = '';
+      // Re-focus so the user can keep typing
+      requestAnimationFrame(() => input.focus());
     });
     return;
   }
