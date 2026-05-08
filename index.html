@@ -2316,6 +2316,31 @@
     padding: 8px 18px;
     font-size: 14px;
   }
+
+  /* Moderation links — Flag and Block, on other people's posts / replies / messages */
+  .mod-link {
+    color: var(--ink-faint) !important;
+    font-size: 12px !important;
+  }
+  .mod-link:hover {
+    color: var(--ink) !important;
+    text-decoration: underline;
+  }
+
+  /* Chat message moderation actions live below the body, smaller and faded */
+  .chat-msg-actions {
+    margin-top: 4px;
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+  }
+  .chat-msg-actions .auth-link {
+    font-size: 10.5px;
+    color: var(--ink-faint);
+    opacity: 0.65;
+  }
+  .chat-msg-actions .auth-link:hover { opacity: 1; }
+  .chat-msg.own .chat-msg-actions { display: none; }
 </style>
 </head>
 <body>
@@ -2636,6 +2661,70 @@
         return { ok: true };
       } catch (e) {
         return { error: e.message };
+      }
+    },
+
+    // ─── Moderation: flagging content (per-item) ───
+    flagPost: async (gid, pid, uid, reason) => {
+      try {
+        await setDoc(doc(db, 'groups', gid, 'posts', pid, 'flags', uid), {
+          reason: reason || '',
+          createdAt: serverTimestamp()
+        });
+        return { ok: true };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    flagReply: async (gid, pid, rid, uid, reason) => {
+      try {
+        await setDoc(doc(db, 'groups', gid, 'posts', pid, 'replies', rid, 'flags', uid), {
+          reason: reason || '',
+          createdAt: serverTimestamp()
+        });
+        return { ok: true };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    flagMessage: async (gid, mid, uid, reason) => {
+      try {
+        await setDoc(doc(db, 'groups', gid, 'messages', mid, 'flags', uid), {
+          reason: reason || '',
+          createdAt: serverTimestamp()
+        });
+        return { ok: true };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+
+    // ─── Moderation: blocking a user (across the whole app) ───
+    blockUser: async (myUid, otherUid) => {
+      try {
+        await setDoc(doc(db, 'profiles', myUid, 'blocks', otherUid), {
+          createdAt: serverTimestamp()
+        });
+        return { ok: true };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    unblockUser: async (myUid, otherUid) => {
+      try {
+        await deleteDoc(doc(db, 'profiles', myUid, 'blocks', otherUid));
+        return { ok: true };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    listBlockedUids: async (myUid) => {
+      try {
+        const snap = await getDocs(collection(db, 'profiles', myUid, 'blocks'));
+        return snap.docs.map(d => d.id);
+      } catch (e) {
+        console.warn('listBlockedUids failed', e);
+        return [];
       }
     },
   };
@@ -3477,13 +3566,14 @@ function setupAuthListener() {
 }
 
 // Load (or refresh) the user's public profile from /profiles/{uid}
-// Also pulls down which groups the user belongs to so "Share to a group"
-// can offer the right options anywhere in the app.
+// Also pulls down which groups the user belongs to and who they've blocked
+// so the rest of the app (share UI, content filters) can render correctly.
 async function loadCommunityProfile() {
   if (!currentUser || !window.bsCommunityDb?.available) return;
-  const [profile, memberships] = await Promise.all([
+  const [profile, memberships, blockedUids] = await Promise.all([
     window.bsCommunityDb.loadProfile(currentUser.uid),
-    window.bsCommunityDb.listMyMemberships(currentUser.uid)
+    window.bsCommunityDb.listMyMemberships(currentUser.uid),
+    window.bsCommunityDb.listBlockedUids(currentUser.uid)
   ]);
   if (!state.community) state.community = defaultState().community;
   state.community.profile = profile || null;
@@ -3491,10 +3581,19 @@ async function loadCommunityProfile() {
   for (const m of memberships || []) {
     state.community.memberships[m.gid] = { role: m.role, joinedAt: Date.now() };
   }
+  state.community.blockedUids = blockedUids || [];
   // Persist locally so we don't flash the setup screen on next reload before Firestore replies
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
   // Re-render any view that depends on membership (chapter share, community list, group page)
   render();
+}
+
+// True if the current user has blocked this author. Blocking hides the author's
+// posts, replies, and messages everywhere in the app.
+function isAuthorBlocked(authorUid) {
+  if (!authorUid) return false;
+  const list = state.community?.blockedUids || [];
+  return list.includes(authorUid);
 }
 
 // Returns the list of groups the current user has joined, in display order.
@@ -4495,7 +4594,8 @@ function renderCommunityGroup(slug, tab) {
     `).join('');
 
     // Real posts from Firestore (newest first; we render them above the seed pinned/starters)
-    const realPosts = communityCache.posts[slug] || [];
+    // Filter out posts authored by users I've blocked
+    const realPosts = (communityCache.posts[slug] || []).filter(p => !isAuthorBlocked(p.authorUid));
     const replyCache = communityCache.replies || {};
     const openReplyTo = window._openReplyTo;
 
@@ -4503,6 +4603,10 @@ function renderCommunityGroup(slug, tab) {
       const rts = r.createdAt?.toDate ? r.createdAt.toDate() : null;
       const rwhen = rts ? formatTimeAgo(rts.getTime()) : 'just now';
       const isOwnReply = r.authorUid === currentUser?.uid;
+      const replyActions = isOwnReply
+        ? `<button class="auth-link" data-act="delete-reply" data-slug="${escape(parentSlug)}" data-pid="${escape(parentPid)}" data-rid="${escape(r.id)}">Delete</button>`
+        : `<button class="auth-link mod-link" data-act="flag-reply" data-slug="${escape(parentSlug)}" data-pid="${escape(parentPid)}" data-rid="${escape(r.id)}">Flag</button>
+           <button class="auth-link mod-link" data-act="block-author" data-uid="${escape(r.authorUid)}" data-name="${escape(r.authorName || 'this user')}">Block</button>`;
       return `
         <div class="group-reply" data-rid="${escape(r.id)}">
           <div class="group-reply-head">
@@ -4510,9 +4614,7 @@ function renderCommunityGroup(slug, tab) {
             <span class="group-reply-meta">${escape(rwhen)}${isOwnReply ? ' · you' : ''}</span>
           </div>
           <div class="group-reply-body">${escape(r.body).replace(/\n/g, '<br>')}</div>
-          ${isOwnReply
-            ? `<div class="group-reply-actions"><button class="auth-link" data-act="delete-reply" data-slug="${escape(parentSlug)}" data-pid="${escape(parentPid)}" data-rid="${escape(r.id)}">Delete</button></div>`
-            : ''}
+          <div class="group-reply-actions">${replyActions}</div>
         </div>
       `;
     };
@@ -4521,7 +4623,7 @@ function renderCommunityGroup(slug, tab) {
       const ts = p.createdAt?.toDate ? p.createdAt.toDate() : null;
       const when = ts ? formatTimeAgo(ts.getTime()) : 'just now';
       const isOwn = p.authorUid === currentUser?.uid;
-      const replies = replyCache[p.id] || [];
+      const replies = (replyCache[p.id] || []).filter(r => !isAuthorBlocked(r.authorUid));
       const replyCount = replies.length;
       const isReplyComposerOpen = openReplyTo === p.id;
       const replyComposer = (isMember && isReplyComposerOpen) ? `
@@ -4544,6 +4646,8 @@ function renderCommunityGroup(slug, tab) {
           <div class="group-post-actions">
             ${isMember ? `<button class="auth-link" data-act="toggle-reply-composer" data-pid="${escape(p.id)}">${isReplyComposerOpen ? 'Close reply' : 'Reply'}${replyCount ? ` · ${replyCount}` : ''}</button>` : ''}
             ${isOwn ? `<button class="auth-link" data-act="delete-post" data-slug="${escape(slug)}" data-pid="${escape(p.id)}">Delete</button>` : ''}
+            ${!isOwn ? `<button class="auth-link mod-link" data-act="flag-post" data-slug="${escape(slug)}" data-pid="${escape(p.id)}">Flag</button>` : ''}
+            ${!isOwn ? `<button class="auth-link mod-link" data-act="block-author" data-uid="${escape(p.authorUid)}" data-name="${escape(p.authorName || 'this user')}">Block</button>` : ''}
           </div>
           ${replyCount > 0 ? `<div class="group-replies">${replies.map(r => renderReply(r, slug, p.id)).join('')}</div>` : ''}
           ${replyComposer}
@@ -4579,12 +4683,19 @@ function renderCommunityGroup(slug, tab) {
     `;
   } else {
     // Chat tab — descending from Firestore, reversed here for chronological display
-    const rawMessages = communityCache.messages[slug] || [];
+    // Filter out messages from users I've blocked
+    const rawMessages = (communityCache.messages[slug] || []).filter(m => !isAuthorBlocked(m.authorUid));
     const messages = [...rawMessages].reverse(); // oldest → newest
     const messagesHtml = messages.map(m => {
       const ts = m.createdAt?.toDate ? m.createdAt.toDate() : null;
       const when = ts ? formatTimeAgo(ts.getTime()) : 'just now';
       const isOwn = m.authorUid === currentUser?.uid;
+      const modActions = !isOwn ? `
+        <div class="chat-msg-actions">
+          <button class="auth-link mod-link" data-act="flag-message" data-slug="${escape(slug)}" data-mid="${escape(m.id)}">Flag</button>
+          <button class="auth-link mod-link" data-act="block-author" data-uid="${escape(m.authorUid)}" data-name="${escape(m.authorName || 'this user')}">Block</button>
+        </div>
+      ` : '';
       return `
         <div class="chat-msg ${isOwn ? 'own' : ''}" data-mid="${escape(m.id)}">
           <div class="chat-msg-meta">
@@ -4593,6 +4704,7 @@ function renderCommunityGroup(slug, tab) {
           </div>
           <div class="chat-msg-body">${escape(m.body).replace(/\n/g, '<br>')}</div>
           ${isOwn ? `<button class="chat-msg-del" data-act="delete-message" data-slug="${escape(slug)}" data-mid="${escape(m.id)}" title="Delete">×</button>` : ''}
+          ${modActions}
         </div>
       `;
     }).join('');
@@ -4931,6 +5043,77 @@ function onClick(e) {
   if (act === 'close-share') {
     window._openShareTarget = null;
     return render();
+  }
+
+  // ─── Moderation handlers ───
+  if (act === 'flag-post') {
+    const slug = t.dataset.slug;
+    const pid = t.dataset.pid;
+    if (!confirm('Flag this post for review by the group owner? This is for spam, harassment, or inappropriate content.')) return;
+    window.bsCommunityDb.flagPost(slug, pid, currentUser.uid).then((r) => {
+      if (r.error) toast('Could not flag: ' + r.error);
+      else toast('Flagged. Thanks for letting us know.');
+    });
+    return;
+  }
+  if (act === 'flag-reply') {
+    const slug = t.dataset.slug;
+    const pid = t.dataset.pid;
+    const rid = t.dataset.rid;
+    if (!confirm('Flag this reply for review by the group owner?')) return;
+    window.bsCommunityDb.flagReply(slug, pid, rid, currentUser.uid).then((r) => {
+      if (r.error) toast('Could not flag: ' + r.error);
+      else toast('Flagged. Thanks for letting us know.');
+    });
+    return;
+  }
+  if (act === 'flag-message') {
+    const slug = t.dataset.slug;
+    const mid = t.dataset.mid;
+    if (!confirm('Flag this message for review by the group owner?')) return;
+    window.bsCommunityDb.flagMessage(slug, mid, currentUser.uid).then((r) => {
+      if (r.error) toast('Could not flag: ' + r.error);
+      else toast('Flagged. Thanks for letting us know.');
+    });
+    return;
+  }
+  if (act === 'block-author') {
+    const otherUid = t.dataset.uid;
+    const name = t.dataset.name || 'this user';
+    if (!otherUid || otherUid === currentUser.uid) return;
+    if (!confirm(`Block ${name}? You won\'t see their posts or messages anywhere in the app.`)) return;
+    window.bsCommunityDb.blockUser(currentUser.uid, otherUid).then((r) => {
+      if (r.error) {
+        toast('Could not block: ' + r.error);
+        return;
+      }
+      // Local cache so the UI updates immediately
+      if (!state.community.blockedUids) state.community.blockedUids = [];
+      if (!state.community.blockedUids.includes(otherUid)) {
+        state.community.blockedUids.push(otherUid);
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+      }
+      toast(`Blocked ${name}. Their content is hidden.`);
+      render();
+    });
+    return;
+  }
+  if (act === 'unblock-author') {
+    const otherUid = t.dataset.uid;
+    if (!otherUid) return;
+    window.bsCommunityDb.unblockUser(currentUser.uid, otherUid).then((r) => {
+      if (r.error) {
+        toast('Could not unblock: ' + r.error);
+        return;
+      }
+      if (state.community.blockedUids) {
+        state.community.blockedUids = state.community.blockedUids.filter(u => u !== otherUid);
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+      }
+      toast('Unblocked');
+      render();
+    });
+    return;
   }
   if (act === 'share-prefill') {
     const ta = document.getElementById('share-body');
