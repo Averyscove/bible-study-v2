@@ -3,9 +3,9 @@
  * Bump CACHE_VERSION each time index.html or sw.js changes meaningfully.
  */
 
-const CACHE_VERSION = 'v2-alpha-2026-05-07-account-deletion';
+const CACHE_VERSION = 'v2-alpha-2026-05-07-legal';
 const CACHE_NAME = `bible-study-v2-${CACHE_VERSION}`;
-const PRECACHE_URLS = ['./', './index.html', './sw.js'];
+const PRECACHE_URLS = ['./', './index.html', './sw.js', './privacy.html', './terms.html'];
 
 // Install: pre-cache the app shell
 self.addEventListener('install', (event) => {
