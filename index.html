@@ -2341,6 +2341,96 @@
   }
   .chat-msg-actions .auth-link:hover { opacity: 1; }
   .chat-msg.own .chat-msg-actions { display: none; }
+
+  /* Delete-account screen */
+  .delete-account-screen {
+    max-width: 540px;
+    margin: 0 auto;
+    padding: 4px 4px 40px;
+  }
+  .delete-warning {
+    font-family: var(--serif);
+    color: var(--ink);
+    font-size: 15px;
+    line-height: 1.6;
+  }
+  .delete-warning ul {
+    margin: 8px 0 16px 18px;
+    padding: 0;
+  }
+  .delete-warning li {
+    margin: 4px 0;
+  }
+  .delete-warning .muted {
+    color: var(--ink-faint);
+    font-style: italic;
+    font-size: 13.5px;
+    margin: 14px 0;
+    padding: 10px 12px;
+    border-left: 2px solid var(--rule, rgba(0,0,0,0.15));
+    background: var(--surface-2, rgba(0,0,0,0.02));
+  }
+  .delete-warning code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--surface-2, rgba(0,0,0,0.05));
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+  .delete-opt {
+    display: flex;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--rule, rgba(0,0,0,0.15));
+    border-radius: 8px;
+    margin: 16px 0;
+    cursor: pointer;
+    align-items: flex-start;
+  }
+  .delete-opt input { margin-top: 3px; }
+  .delete-opt em {
+    color: var(--ink-faint);
+    font-style: italic;
+  }
+
+  /* Big destructive button — visually distinct from .btn-primary */
+  .btn-danger {
+    background: #8b2222;
+    color: #fbf4e3;
+    border: none;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 120ms ease, transform 120ms ease;
+  }
+  .btn-danger:hover { background: #6b1818; transform: translateY(-1px); }
+  .btn-danger:active { transform: translateY(0); }
+
+  /* Progress spinner shown while deletion runs */
+  .delete-progress {
+    text-align: center;
+    padding: 40px 16px;
+  }
+  .spinner {
+    width: 36px;
+    height: 36px;
+    border: 3px solid var(--rule, rgba(0,0,0,0.15));
+    border-top-color: var(--ink);
+    border-radius: 50%;
+    margin: 0 auto 18px;
+    animation: bs-spin 0.8s linear infinite;
+  }
+  @keyframes bs-spin {
+    to { transform: rotate(360deg); }
+  }
+  .delete-progress-msg {
+    font-family: var(--serif);
+    color: var(--ink);
+    font-size: 14.5px;
+  }
 </style>
 </head>
 <body>
@@ -2377,7 +2467,8 @@
   import {
     getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword,
     signOut, onAuthStateChanged, sendPasswordResetEmail,
-    setPersistence, browserLocalPersistence
+    setPersistence, browserLocalPersistence,
+    EmailAuthProvider, reauthenticateWithCredential, deleteUser
   } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js';
   import {
     getFirestore, doc, getDoc, setDoc, deleteDoc, updateDoc, serverTimestamp,
@@ -2432,6 +2523,27 @@
       catch (e) { return { error: friendlyError(e) }; }
     },
     onAuthChanged: (cb) => onAuthStateChanged(auth, cb),
+    // Re-verify the user's password before destructive actions (account deletion).
+    // Firebase requires recent re-authentication for delete; this gives us that proof.
+    reauthenticate: async (password) => {
+      try {
+        const user = auth.currentUser;
+        if (!user || !user.email) return { error: 'Not signed in.' };
+        const credential = EmailAuthProvider.credential(user.email, password);
+        await reauthenticateWithCredential(user, credential);
+        return { ok: true };
+      } catch (e) { return { error: friendlyError(e) }; }
+    },
+    // Permanently deletes the Firebase Auth user. Caller is responsible for
+    // purging Firestore content first (see bsCommunityDb.deleteMyAccountData).
+    deleteCurrentUser: async () => {
+      try {
+        const user = auth.currentUser;
+        if (!user) return { error: 'Not signed in.' };
+        await deleteUser(user);
+        return { ok: true };
+      } catch (e) { return { error: friendlyError(e) }; }
+    },
   };
 
   window.bsDb = {
@@ -2726,6 +2838,86 @@
         console.warn('listBlockedUids failed', e);
         return [];
       }
+    },
+
+    // ─── Account deletion: purge all Firestore content owned by this user ───
+    // Required for App Store (Guideline 5.1.1(v)). Caller must delete the
+    // Firebase Auth user separately via bsAuth.deleteCurrentUser().
+    //
+    // What this deletes:
+    //   - Profile doc and all its blocks subcollection
+    //   - Group memberships in the 6 known groups
+    //   - Posts authored by the user (across all groups)
+    //   - Messages authored by the user (across all groups)
+    //   - Optionally, the v1 /users/{uid} reading-progress doc
+    //
+    // What it does NOT delete (yet):
+    //   - Replies authored by the user (deeply nested; would need a
+    //     collectionGroup index). Documented in the confirmation UI.
+    deleteMyAccountData: async (uid, opts = {}) => {
+      const { alsoDeleteReadingData = false, groupSlugs = [], onProgress } = opts;
+      const errors = [];
+
+      const safeDelete = async (label, fn) => {
+        try { await fn(); }
+        catch (e) { errors.push(`${label}: ${e.message || e.code || e}`); }
+      };
+
+      const tick = (msg) => { if (onProgress) onProgress(msg); };
+
+      // 1. For each group: delete my posts, my messages, my membership
+      for (const slug of groupSlugs) {
+        tick(`Removing your activity in ${slug}…`);
+
+        // My posts in this group
+        await safeDelete(`posts/${slug}`, async () => {
+          const q = query(collection(db, 'groups', slug, 'posts'), where('authorUid', '==', uid));
+          const snap = await getDocs(q);
+          for (const d of snap.docs) {
+            await deleteDoc(d.ref);
+          }
+        });
+
+        // My chat messages in this group
+        await safeDelete(`messages/${slug}`, async () => {
+          const q = query(collection(db, 'groups', slug, 'messages'), where('authorUid', '==', uid));
+          const snap = await getDocs(q);
+          for (const d of snap.docs) {
+            await deleteDoc(d.ref);
+          }
+        });
+
+        // My membership doc (if it exists)
+        await safeDelete(`members/${slug}`, async () => {
+          await deleteDoc(doc(db, 'groups', slug, 'members', uid));
+        });
+      }
+
+      // 2. My blocks subcollection
+      tick('Clearing your blocklist…');
+      await safeDelete('blocks', async () => {
+        const snap = await getDocs(collection(db, 'profiles', uid, 'blocks'));
+        for (const d of snap.docs) {
+          await deleteDoc(d.ref);
+        }
+      });
+
+      // 3. Profile doc
+      tick('Deleting your profile…');
+      await safeDelete('profile', async () => {
+        await deleteDoc(doc(db, 'profiles', uid));
+      });
+
+      // 4. v1 reading data (only if user opted in)
+      if (alsoDeleteReadingData) {
+        tick('Deleting your reading progress…');
+        await safeDelete('users (v1)', async () => {
+          await deleteDoc(doc(db, 'users', uid));
+        });
+      }
+
+      tick('Account data removed.');
+      return errors.length ? { ok: true, partialErrors: errors } : { ok: true };
     },
   };
 
@@ -3685,6 +3877,7 @@ function render() {
   else if (view.name === 'community') body = renderCommunity();
   else if (view.name === 'community-group') body = renderCommunityGroup(view.groupSlug, view.groupTab || 'discussions');
   else if (view.name === 'community-profile') body = renderCommunityProfileSetup();
+  else if (view.name === 'delete-account') body = renderDeleteAccount();
   else if (view.name === 'settings') body = renderSettings();
 
   app.innerHTML = `
@@ -3733,6 +3926,7 @@ function headerTitle() {
   if (view.name === 'community-profile') {
     return state.community.profile?.displayName ? 'Edit profile' : 'Set up profile';
   }
+  if (view.name === 'delete-account') return 'Delete account';
   if (view.name === 'settings') return 'Settings';
   return 'Starting with Christ';
 }
@@ -4765,6 +4959,94 @@ function renderCommunityGroup(slug, tab) {
   `;
 }
 
+/* =================== Delete account (App Store Guideline 5.1.1(v)) =================== */
+// Multi-step flow:
+//   step 1 — warning + checkbox(es) + "type DELETE"
+//   step 2 — password re-auth + final confirm
+//   step 3 — running deletion (progress messages)
+function renderDeleteAccount() {
+  const step = window._deleteAccountStep || 1;
+  const includeReadingData = !!window._deleteIncludeReadingData;
+  const msg = window._deleteAccountMessage
+    ? `<div class="auth-${window._deleteAccountMessage.type}">${escape(window._deleteAccountMessage.text)}</div>`
+    : '';
+  const progress = window._deleteAccountProgress || '';
+
+  if (!currentUser) {
+    return `
+      <div class="content"><p>You're not signed in. Nothing to delete.</p>
+        <button class="btn-primary" data-act="home">Home</button>
+      </div>
+    `;
+  }
+
+  if (step === 3) {
+    return `
+      <div class="delete-account-screen">
+        <div class="reader-head">
+          ${ornLine()}
+          <h2>Deleting your account</h2>
+        </div>
+        <div class="delete-progress">
+          <div class="spinner"></div>
+          <div class="delete-progress-msg">${escape(progress || 'Working…')}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (step === 2) {
+    return `
+      <div class="delete-account-screen">
+        <div class="reader-head">
+          ${ornLine()}
+          <h2>Confirm deletion</h2>
+          <div class="sub">For your safety, re-enter your password. Once confirmed, deletion cannot be undone.</div>
+        </div>
+        <form class="auth-form" id="delete-account-confirm">
+          <label for="da-password">Password</label>
+          <input id="da-password" type="password" autocomplete="current-password" required minlength="6" autofocus>
+          ${msg}
+          <button type="submit" class="btn-danger">Permanently delete my account</button>
+          <button type="button" class="btn-secondary" data-act="cancel-delete-account">Cancel</button>
+        </form>
+      </div>
+    `;
+  }
+
+  // Step 1 — warning
+  return `
+    <div class="delete-account-screen">
+      <div class="reader-head">
+        ${ornLine()}
+        <h2>Delete my account</h2>
+        <div class="sub">This action is permanent. Read carefully.</div>
+      </div>
+      <div class="delete-warning">
+        <p>Deleting your account will permanently remove:</p>
+        <ul>
+          <li>Your community profile (display name, bio, level, favorite books)</li>
+          <li>Your membership in every group you've joined</li>
+          <li>Every post and chat message you've authored across all groups</li>
+          <li>Your blocklist</li>
+        </ul>
+        <p class="muted">A note on replies: replies you've written under other people's discussion posts are not auto-deleted in this version (we'll clean those up in a follow-up). If you've written replies you want removed, please delete them manually before continuing.</p>
+        <label class="delete-opt">
+          <input type="checkbox" id="da-also-reading" ${includeReadingData ? 'checked' : ''}>
+          <span>Also delete my reading progress, notes, bookmarks, and streak <em>(everything from v1, gone forever)</em></span>
+        </label>
+        <p>To confirm, type <code>DELETE</code> below:</p>
+        <form class="auth-form" id="delete-account-warn">
+          <input id="da-confirm" type="text" placeholder="DELETE" autocomplete="off" autocapitalize="characters" required>
+          ${msg}
+          <button type="submit" class="btn-danger">Continue</button>
+          <button type="button" class="btn-secondary" data-act="cancel-delete-account">Never mind</button>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
 /* =================== Settings =================== */
 function renderSettings() {
   const tp = totalProgress();
@@ -4854,6 +5136,17 @@ function renderSettings() {
       <div class="setting-row" style="border-bottom:0;justify-content:center;padding-top:18px;">
         <button class="danger" data-act="reset">Reset all progress and notes</button>
       </div>
+
+      ${currentUser ? `
+        <div class="section-h" style="margin-top:32px;"><span>Account</span></div>
+        <div class="setting-row" style="border-bottom:0;">
+          <div>
+            <div class="setting-label">Delete my account</div>
+            <div class="setting-sub">Permanently remove your community profile, posts, messages, and memberships. This cannot be undone.</div>
+          </div>
+          <div class="setting-control"><button class="danger" data-act="open-delete-account">Delete</button></div>
+        </div>
+      ` : ''}
 
       <div class="footer-credit" style="margin-top:32px;">
         <svg class="orn"><use href="#orn-line"/></svg>
@@ -5115,6 +5408,19 @@ function onClick(e) {
     });
     return;
   }
+  if (act === 'open-delete-account') {
+    window._deleteAccountStep = 1;
+    window._deleteIncludeReadingData = false;
+    window._deleteAccountMessage = null;
+    window._deleteAccountProgress = null;
+    return setView({ name: 'delete-account' });
+  }
+  if (act === 'cancel-delete-account') {
+    window._deleteAccountStep = null;
+    window._deleteIncludeReadingData = false;
+    window._deleteAccountMessage = null;
+    return setView({ name: 'settings' });
+  }
   if (act === 'share-prefill') {
     const ta = document.getElementById('share-body');
     if (ta) {
@@ -5354,6 +5660,91 @@ function onSubmit(e) {
       toast('Posted ✓');
       // The onSnapshot listener will re-render with the new post
     });
+    return;
+  }
+
+  // Delete-account step 1: user typed DELETE and chose whether to also wipe reading data
+  if (e.target.id === 'delete-account-warn') {
+    e.preventDefault();
+    const confirmText = (document.getElementById('da-confirm')?.value || '').trim();
+    const includeReadingCheckbox = document.getElementById('da-also-reading');
+    window._deleteIncludeReadingData = !!(includeReadingCheckbox && includeReadingCheckbox.checked);
+    window._deleteAccountMessage = null;
+    if (confirmText !== 'DELETE') {
+      window._deleteAccountMessage = { type: 'error', text: 'Please type DELETE in capital letters to continue.' };
+      return render();
+    }
+    window._deleteAccountStep = 2;
+    return render();
+  }
+
+  // Delete-account step 2: user re-enters password; we reauth, purge data, delete auth user, sign out.
+  if (e.target.id === 'delete-account-confirm') {
+    e.preventDefault();
+    const password = document.getElementById('da-password')?.value || '';
+    if (!password) {
+      window._deleteAccountMessage = { type: 'error', text: 'Enter your password to confirm.' };
+      return render();
+    }
+
+    // Step 1: reauthenticate
+    window._deleteAccountMessage = null;
+    window._deleteAccountStep = 3;
+    window._deleteAccountProgress = 'Verifying your password…';
+    render();
+
+    (async () => {
+      const reauth = await window.bsAuth.reauthenticate(password);
+      if (reauth.error) {
+        window._deleteAccountStep = 2;
+        window._deleteAccountProgress = null;
+        window._deleteAccountMessage = { type: 'error', text: reauth.error };
+        return render();
+      }
+
+      const uid = currentUser.uid;
+      const slugs = SEED_GROUPS.map(g => g.slug);
+      const includeReading = !!window._deleteIncludeReadingData;
+
+      // Step 2: purge Firestore content
+      const purge = await window.bsCommunityDb.deleteMyAccountData(uid, {
+        groupSlugs: slugs,
+        alsoDeleteReadingData: includeReading,
+        onProgress: (msg) => {
+          window._deleteAccountProgress = msg;
+          render();
+        }
+      });
+      if (purge.partialErrors) {
+        console.warn('Account purge partial errors:', purge.partialErrors);
+      }
+
+      // Step 3: delete the Firebase Auth user
+      window._deleteAccountProgress = 'Removing your sign-in…';
+      render();
+      const del = await window.bsAuth.deleteCurrentUser();
+      if (del.error) {
+        window._deleteAccountStep = 2;
+        window._deleteAccountProgress = null;
+        window._deleteAccountMessage = { type: 'error', text: del.error };
+        return render();
+      }
+
+      // Step 4: clear local app state
+      window._deleteAccountProgress = 'Almost done…';
+      render();
+      try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+      try { localStorage.removeItem('biblestudy_skipauth'); } catch (e) {}
+      Object.assign(state, defaultState());
+      currentUser = null;
+      initialSyncDone = false;
+      window._deleteAccountStep = null;
+      window._deleteAccountProgress = null;
+      window._deleteIncludeReadingData = false;
+
+      toast('Account deleted. Goodbye.');
+      setView({ name: 'welcome' });
+    })();
     return;
   }
 

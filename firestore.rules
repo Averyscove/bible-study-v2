@@ -27,7 +27,9 @@ service cloud.firestore {
       allow create, update: if request.auth != null
         && request.auth.uid == uid
         && validProfile(request.resource.data);
-      allow delete: if false;
+      // Self-delete is allowed (Apple Guideline 5.1.1(v): users must be able
+      // to delete their account from inside the app).
+      allow delete: if request.auth != null && request.auth.uid == uid;
 
       // Private "blocked users" list — only the owner can read/write
       // /profiles/{uid}/blocks/{otherUid} → { createdAt }
