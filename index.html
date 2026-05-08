@@ -2001,6 +2001,78 @@
     gap: 14px;
     justify-content: flex-end;
   }
+
+  /* Replies — indented under a post, smaller, simpler */
+  .group-replies {
+    margin: 10px 0 0 14px;
+    padding-left: 14px;
+    border-left: 2px solid var(--rule, rgba(0,0,0,0.1));
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .group-reply {
+    padding: 10px 12px;
+    border: 1px solid var(--rule, rgba(0,0,0,0.08));
+    border-radius: 8px;
+    background: var(--surface-2, rgba(0,0,0,0.015));
+  }
+  .group-reply-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+  .group-reply-author {
+    font-weight: 600;
+    color: var(--ink);
+    font-size: 13px;
+  }
+  .group-reply-meta {
+    font-size: 11px;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .group-reply-body {
+    font-family: var(--serif);
+    font-size: 14.5px;
+    line-height: 1.55;
+    color: var(--ink);
+    white-space: pre-wrap;
+  }
+  .group-reply-actions {
+    margin-top: 6px;
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+  }
+
+  /* Inline reply composer (smaller than the top-level post composer) */
+  .reply-composer {
+    margin-top: 10px;
+    padding: 10px;
+    border: 1px solid var(--rule, rgba(0,0,0,0.15));
+    border-radius: 8px;
+    background: var(--surface, transparent);
+  }
+  .reply-composer textarea {
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 14.5px;
+    line-height: 1.5;
+    padding: 4px 4px;
+    resize: vertical;
+    box-sizing: border-box;
+    min-height: 50px;
+  }
+  .reply-composer textarea:focus { outline: none; }
+  .reply-composer .composer-actions { padding-top: 6px; border: none; }
+  .reply-composer .btn-primary { padding: 6px 14px; font-size: 13.5px; }
 </style>
 </head>
 <body>
@@ -2294,6 +2366,14 @@
     deleteMessage: async (gid, mid) => {
       try {
         await deleteDoc(doc(db, 'groups', gid, 'messages', mid));
+        return { ok: true };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    deleteReply: async (gid, pid, rid) => {
+      try {
+        await deleteDoc(doc(db, 'groups', gid, 'posts', pid, 'replies', rid));
         return { ok: true };
       } catch (e) {
         return { error: e.message };
@@ -2807,15 +2887,42 @@ async function setupCommunityListeners(gid) {
   if (communityListeners.has(`posts:${gid}`)) return;
   teardownCommunityListeners();
 
-  // Listen to discussion posts
+  // Listen to discussion posts. The callback also wires up a reply listener
+  // for each visible post (and tears down listeners for posts that are gone).
   const unsubPosts = window.bsCommunityDb.listenToPosts(gid, (posts) => {
     communityCache.posts[gid] = posts;
+    syncRepliesListeners(gid, posts);
     if (view.name === 'community-group' && view.groupSlug === gid) render();
   });
   communityListeners.set(`posts:${gid}`, unsubPosts);
 
   // Refresh member count and current user's membership status
   refreshGroupMembership(gid);
+}
+
+// Reconcile reply listeners against the current post list:
+// - Add a listener for any post that doesn't have one yet
+// - Tear down listeners for posts that no longer exist
+function syncRepliesListeners(gid, posts) {
+  if (!communityCache.replies) communityCache.replies = {};
+  const wantedKeys = new Set(posts.map(p => `replies:${gid}:${p.id}`));
+  // Tear down stale
+  for (const [key, unsub] of communityListeners) {
+    if (key.startsWith(`replies:${gid}:`) && !wantedKeys.has(key)) {
+      try { unsub(); } catch (e) {}
+      communityListeners.delete(key);
+    }
+  }
+  // Set up fresh
+  for (const p of posts) {
+    const key = `replies:${gid}:${p.id}`;
+    if (communityListeners.has(key)) continue;
+    const unsub = window.bsCommunityDb.listenToReplies(gid, p.id, (replies) => {
+      communityCache.replies[p.id] = replies;
+      if (view.name === 'community-group' && view.groupSlug === gid) render();
+    });
+    communityListeners.set(key, unsub);
+  }
 }
 
 async function refreshGroupMembership(gid) {
@@ -4048,10 +4155,44 @@ function renderCommunityGroup(slug, tab) {
 
     // Real posts from Firestore (newest first; we render them above the seed pinned/starters)
     const realPosts = communityCache.posts[slug] || [];
+    const replyCache = communityCache.replies || {};
+    const openReplyTo = window._openReplyTo;
+
+    const renderReply = (r, parentSlug, parentPid) => {
+      const rts = r.createdAt?.toDate ? r.createdAt.toDate() : null;
+      const rwhen = rts ? formatTimeAgo(rts.getTime()) : 'just now';
+      const isOwnReply = r.authorUid === currentUser?.uid;
+      return `
+        <div class="group-reply" data-rid="${escape(r.id)}">
+          <div class="group-reply-head">
+            <span class="group-reply-author">${escape(r.authorName || 'Unknown')}</span>
+            <span class="group-reply-meta">${escape(rwhen)}${isOwnReply ? ' · you' : ''}</span>
+          </div>
+          <div class="group-reply-body">${escape(r.body).replace(/\n/g, '<br>')}</div>
+          ${isOwnReply
+            ? `<div class="group-reply-actions"><button class="auth-link" data-act="delete-reply" data-slug="${escape(parentSlug)}" data-pid="${escape(parentPid)}" data-rid="${escape(r.id)}">Delete</button></div>`
+            : ''}
+        </div>
+      `;
+    };
+
     const realPostsHtml = realPosts.map(p => {
       const ts = p.createdAt?.toDate ? p.createdAt.toDate() : null;
       const when = ts ? formatTimeAgo(ts.getTime()) : 'just now';
       const isOwn = p.authorUid === currentUser?.uid;
+      const replies = replyCache[p.id] || [];
+      const replyCount = replies.length;
+      const isReplyComposerOpen = openReplyTo === p.id;
+      const replyComposer = (isMember && isReplyComposerOpen) ? `
+        <form class="reply-composer" id="reply-composer" data-slug="${escape(slug)}" data-pid="${escape(p.id)}">
+          <textarea name="body" rows="2" maxlength="2000" placeholder="Write a reply…" required minlength="1" autofocus></textarea>
+          <div class="composer-actions">
+            <button type="button" class="auth-link" data-act="cancel-reply">Cancel</button>
+            <button type="submit" class="btn-primary">Reply</button>
+          </div>
+        </form>
+      ` : '';
+
       return `
         <article class="group-post" data-pid="${escape(p.id)}">
           <div class="group-post-head">
@@ -4059,7 +4200,12 @@ function renderCommunityGroup(slug, tab) {
             <span class="group-post-meta">${escape(when)}${isOwn ? ' · your post' : ''}</span>
           </div>
           <div class="group-post-body">${escape(p.body).replace(/\n/g, '<br>')}</div>
-          ${isOwn ? `<div class="group-post-actions"><button class="auth-link" data-act="delete-post" data-slug="${escape(slug)}" data-pid="${escape(p.id)}">Delete</button></div>` : ''}
+          <div class="group-post-actions">
+            ${isMember ? `<button class="auth-link" data-act="toggle-reply-composer" data-pid="${escape(p.id)}">${isReplyComposerOpen ? 'Close reply' : 'Reply'}${replyCount ? ` · ${replyCount}` : ''}</button>` : ''}
+            ${isOwn ? `<button class="auth-link" data-act="delete-post" data-slug="${escape(slug)}" data-pid="${escape(p.id)}">Delete</button>` : ''}
+          </div>
+          ${replyCount > 0 ? `<div class="group-replies">${replies.map(r => renderReply(r, slug, p.id)).join('')}</div>` : ''}
+          ${replyComposer}
         </article>
       `;
     }).join('');
@@ -4357,6 +4503,29 @@ function onClick(e) {
     });
     return;
   }
+  if (act === 'toggle-reply-composer') {
+    const pid = t.dataset.pid;
+    window._openReplyTo = (window._openReplyTo === pid) ? null : pid;
+    return render();
+  }
+  if (act === 'cancel-reply') {
+    window._openReplyTo = null;
+    return render();
+  }
+  if (act === 'delete-reply') {
+    const slug = t.dataset.slug;
+    const pid = t.dataset.pid;
+    const rid = t.dataset.rid;
+    if (!confirm('Delete this reply?')) return;
+    // Replies live at /groups/{slug}/posts/{pid}/replies/{rid}
+    // No dedicated wrapper yet — write directly via Firestore through bsCommunityDb's helper
+    // (We'll add a deleteReply method.)
+    window.bsCommunityDb.deleteReply(slug, pid, rid).then((r) => {
+      if (r.error) toast('Could not delete: ' + r.error);
+      else toast('Reply deleted');
+    });
+    return;
+  }
   if (act === 'open') return setView({ name: 'chapter', phaseId: t.dataset.phase, chapterId: t.dataset.chapter });
   if (act === 'open-bm') {
     const phaseInfo = findItemAndPhase(t.dataset.id);
@@ -4586,6 +4755,33 @@ function onSubmit(e) {
       form.elements.body.value = '';
       toast('Posted ✓');
       // The onSnapshot listener will re-render with the new post
+    });
+    return;
+  }
+
+  // Reply composer (under a discussion post)
+  if (e.target.id === 'reply-composer') {
+    e.preventDefault();
+    const form = e.target;
+    const slug = form.dataset.slug;
+    const pid = form.dataset.pid;
+    const body = form.elements.body.value.trim();
+    if (!body) return;
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Replying…'; }
+    window.bsCommunityDb.createReply(slug, pid, {
+      authorUid: currentUser.uid,
+      authorName: state.community.profile?.displayName || 'Unknown',
+      body
+    }).then((r) => {
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Reply'; }
+      if (r.error) {
+        toast('Could not reply: ' + r.error);
+        return;
+      }
+      window._openReplyTo = null;
+      toast('Replied ✓');
+      // The replies listener will re-render with the new reply
     });
     return;
   }
