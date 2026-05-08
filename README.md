@@ -71,7 +71,7 @@ See `../docs/community-feature-proposal.md` for the full plan and `../docs/decis
 
 ## Current build status
 
-What's working now (community shell — read-only):
+What's working now:
 
 - ✅ A "Community" icon in the top bar (next to search/settings)
 - ✅ A Community screen showing all 6 launch groups as cards
@@ -81,19 +81,28 @@ What's working now (community shell — read-only):
   - The pinned welcome post (Discussions tab)
   - The 2 starter conversation prompts (Discussions tab)
   - The opening chat message (Chat tab)
+- ✅ **Sign-in gate** — tapping Community without being signed in shows a sign-in/sign-up form
+- ✅ **Profile creation** — first-time users pick a display name, level, favorite books
+- ✅ **Profile editor** accessible from the Community footer
+- ✅ **Profile auto-load** from `/profiles/{uid}` on sign-in
 - ✅ Styled to match the rest of the app
-- ✅ Firestore rules drafted for the full v2 schema (not yet pushed to Firebase)
+- ✅ Firestore rules drafted for the full v2 schema
 
-What's NOT working yet (intentionally):
+> **Note:** profile saves require Firestore rules to be published to the Firebase Console.
+> Until that happens, profile saves will fail with permission-denied. See "Firebase setup" above.
 
-- ❌ Sign-in gate for community features
-- ❌ Profile screen (display name, bio, level)
+What's NOT working yet (next up):
+
 - ❌ Joining / leaving groups
 - ❌ Posting in chat or discussions
 - ❌ Replies on discussion posts
-- ❌ Reactions
+- ❌ Reactions (heart / amen / praying)
 - ❌ Real-time updates
+- ❌ Sharing reflections from the reading flow
 - ❌ Moderation (flag, mute, edit, delete)
+- ❌ Sign in with Apple (App Store requirement)
+- ❌ In-app account deletion (App Store requirement)
+- ❌ Capacitor native iOS wrapper
 
 The seeded group content (`seed-content.md`) is hardcoded into `index.html` as the `SEED_GROUPS` constant. The 6 groups will appear in v2 even without any Firestore writes ever happening — they're config, not data. Only user-generated content (chat messages, replies, memberships) needs Firestore.
 

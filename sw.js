@@ -3,7 +3,7 @@
  * Bump CACHE_VERSION each time index.html or sw.js changes meaningfully.
  */
 
-const CACHE_VERSION = 'v2-alpha-2026-05-07-community-shell';
+const CACHE_VERSION = 'v2-alpha-2026-05-07-profiles';
 const CACHE_NAME = `bible-study-v2-${CACHE_VERSION}`;
 const PRECACHE_URLS = ['./', './index.html', './sw.js'];
 

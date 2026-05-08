@@ -1734,6 +1734,159 @@
     border-radius: 8px;
     margin-top: 12px;
   }
+
+  /* Community sign-in gate */
+  .community-gate {
+    padding: 16px 4px 32px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .community-gate .auth-card { max-width: 460px; }
+  .community-gate-note {
+    margin-top: 18px;
+    max-width: 480px;
+    text-align: center;
+    font-family: var(--serif);
+    font-style: italic;
+    color: var(--ink-faint);
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+
+  /* Profile setup form */
+  .community-profile-setup { padding: 0 4px 40px; max-width: 560px; margin: 0 auto; }
+  .profile-form { display: flex; flex-direction: column; gap: 16px; margin-top: 8px; }
+  .profile-form label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: -8px;
+  }
+  .profile-form .muted {
+    font-weight: 400;
+    color: var(--ink-faint);
+    font-size: 12px;
+  }
+  .profile-form input[type="text"],
+  .profile-form textarea {
+    border: 1px solid var(--rule, rgba(0,0,0,0.18));
+    background: var(--surface, transparent);
+    color: var(--ink);
+    border-radius: 8px;
+    padding: 11px 13px;
+    font: inherit;
+    font-size: 15px;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .profile-form textarea {
+    resize: vertical;
+    font-family: var(--serif);
+    line-height: 1.55;
+  }
+  .profile-form input:focus,
+  .profile-form textarea:focus {
+    outline: 2px solid var(--ink-faint);
+    outline-offset: 1px;
+  }
+
+  .level-options {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .level-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--rule, rgba(0,0,0,0.15));
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease;
+    margin-bottom: 0 !important;
+    font-weight: 400 !important;
+    font-size: 14px !important;
+    color: var(--ink) !important;
+  }
+  .level-option:hover { background: var(--surface-2, rgba(0,0,0,0.02)); }
+  .level-option.selected {
+    border-color: var(--ink);
+    background: var(--surface-2, rgba(0,0,0,0.04));
+  }
+  .level-option input[type="radio"] { margin: 0; }
+
+  .book-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .book-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border: 1px solid var(--rule, rgba(0,0,0,0.18));
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease;
+    font-size: 13.5px !important;
+    font-weight: 400 !important;
+    margin-bottom: 0 !important;
+    color: var(--ink) !important;
+  }
+  .book-tag:hover { background: var(--surface-2, rgba(0,0,0,0.03)); }
+  .book-tag.selected {
+    background: var(--ink);
+    color: var(--paper, #fbf4e3) !important;
+    border-color: var(--ink);
+  }
+  .book-tag input { display: none; }
+
+  .profile-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 6px;
+  }
+  .profile-actions .btn-primary { flex: 1; }
+  .btn-secondary {
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--rule, rgba(0,0,0,0.2));
+    padding: 11px 18px;
+    border-radius: 8px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 14.5px;
+    font-weight: 500;
+  }
+  .btn-secondary:hover { background: var(--surface-2, rgba(0,0,0,0.04)); }
+
+  /* Profile footer at the bottom of the community list */
+  .community-profile-footer {
+    margin-top: 20px;
+    padding: 14px 16px;
+    border: 1px solid var(--rule, rgba(0,0,0,0.12));
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 13.5px;
+  }
+  .cpf-name { color: var(--ink); }
+  .cpf-name strong { font-weight: 600; }
+  .cpf-meta {
+    color: var(--ink-faint);
+    font-size: 12px;
+    margin-top: 2px;
+  }
+  .cpf-right {
+    display: flex;
+    gap: 14px;
+  }
 </style>
 </head>
 <body>
@@ -1773,7 +1926,8 @@
     setPersistence, browserLocalPersistence
   } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js';
   import {
-    getFirestore, doc, getDoc, setDoc, serverTimestamp
+    getFirestore, doc, getDoc, setDoc, deleteDoc, updateDoc, serverTimestamp,
+    collection, query, where, orderBy, limit, onSnapshot, getDocs, addDoc, Timestamp
   } from 'https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js';
 
   const firebaseConfig = {
@@ -1843,6 +1997,207 @@
         return { ok: true };
       } catch (e) {
         console.warn('saveUser failed', e);
+        return { error: e.message };
+      }
+    },
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // Community wrappers (v2). Writes only to /profiles, /groups, never /users.
+  // ────────────────────────────────────────────────────────────────
+  window.bsCommunityDb = {
+    available: !!db,
+
+    // Profile (public, one per user)
+    loadProfile: async (uid) => {
+      try {
+        const snap = await getDoc(doc(db, 'profiles', uid));
+        return snap.exists() ? snap.data() : null;
+      } catch (e) {
+        console.warn('loadProfile failed', e);
+        return null;
+      }
+    },
+    saveProfile: async (uid, data) => {
+      try {
+        await setDoc(doc(db, 'profiles', uid), { ...data, updatedAt: serverTimestamp() }, { merge: true });
+        return { ok: true };
+      } catch (e) {
+        console.warn('saveProfile failed', e);
+        return { error: e.message };
+      }
+    },
+
+    // Group membership
+    joinGroup: async (gid, uid, displayName) => {
+      try {
+        await setDoc(doc(db, 'groups', gid, 'members', uid), {
+          role: 'member',
+          joinedAt: serverTimestamp(),
+          displayName: displayName || ''
+        });
+        return { ok: true };
+      } catch (e) {
+        console.warn('joinGroup failed', e);
+        return { error: e.message };
+      }
+    },
+    leaveGroup: async (gid, uid) => {
+      try {
+        await deleteDoc(doc(db, 'groups', gid, 'members', uid));
+        return { ok: true };
+      } catch (e) {
+        console.warn('leaveGroup failed', e);
+        return { error: e.message };
+      }
+    },
+    isMember: async (gid, uid) => {
+      try {
+        const snap = await getDoc(doc(db, 'groups', gid, 'members', uid));
+        return snap.exists();
+      } catch (e) {
+        return false;
+      }
+    },
+    listMyMemberships: async (uid) => {
+      // Each membership lives under /groups/{gid}/members/{uid}.
+      // We scan our 6 known group slugs (see SEED_GROUPS) since we don't have a top-level membership index.
+      try {
+        const slugs = ['john', 'romans', 'luke', 'acts', 'ot-foundations', 'memory'];
+        const checks = await Promise.all(slugs.map(async (gid) => {
+          const snap = await getDoc(doc(db, 'groups', gid, 'members', uid));
+          return snap.exists() ? { gid, ...snap.data() } : null;
+        }));
+        return checks.filter(Boolean);
+      } catch (e) {
+        console.warn('listMyMemberships failed', e);
+        return [];
+      }
+    },
+    countMembers: async (gid) => {
+      try {
+        const snap = await getDocs(collection(db, 'groups', gid, 'members'));
+        return snap.size;
+      } catch (e) {
+        return 0;
+      }
+    },
+
+    // Discussion posts
+    createPost: async (gid, post) => {
+      try {
+        const ref = await addDoc(collection(db, 'groups', gid, 'posts'), {
+          ...post,
+          createdAt: serverTimestamp()
+        });
+        return { ok: true, id: ref.id };
+      } catch (e) {
+        console.warn('createPost failed', e);
+        return { error: e.message };
+      }
+    },
+    listenToPosts: (gid, onUpdate) => {
+      // Returns an unsubscribe function. Caller must call it when leaving the view.
+      const q = query(collection(db, 'groups', gid, 'posts'), orderBy('createdAt', 'desc'), limit(50));
+      return onSnapshot(q, (snap) => {
+        const posts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        onUpdate(posts);
+      }, (err) => console.warn('listenToPosts error', err));
+    },
+    createReply: async (gid, pid, reply) => {
+      try {
+        const ref = await addDoc(collection(db, 'groups', gid, 'posts', pid, 'replies'), {
+          ...reply,
+          createdAt: serverTimestamp()
+        });
+        return { ok: true, id: ref.id };
+      } catch (e) {
+        console.warn('createReply failed', e);
+        return { error: e.message };
+      }
+    },
+    listenToReplies: (gid, pid, onUpdate) => {
+      const q = query(collection(db, 'groups', gid, 'posts', pid, 'replies'), orderBy('createdAt', 'asc'), limit(100));
+      return onSnapshot(q, (snap) => {
+        const replies = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        onUpdate(replies);
+      }, (err) => console.warn('listenToReplies error', err));
+    },
+
+    // Chat messages
+    sendMessage: async (gid, message) => {
+      try {
+        const ref = await addDoc(collection(db, 'groups', gid, 'messages'), {
+          ...message,
+          createdAt: serverTimestamp()
+        });
+        return { ok: true, id: ref.id };
+      } catch (e) {
+        console.warn('sendMessage failed', e);
+        return { error: e.message };
+      }
+    },
+    listenToMessages: (gid, onUpdate) => {
+      const q = query(collection(db, 'groups', gid, 'messages'), orderBy('createdAt', 'desc'), limit(100));
+      return onSnapshot(q, (snap) => {
+        // Most recent at index 0 (descending) — the UI flips them for display.
+        const msgs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        onUpdate(msgs);
+      }, (err) => console.warn('listenToMessages error', err));
+    },
+
+    // Reactions (on posts and messages — same shape, different paths)
+    setReaction: async (collectionPath, parentId, uid, type) => {
+      // collectionPath is 'posts' or 'messages'; reaction lives at /{path}/{parentId}/reactions/{uid}
+      try {
+        await setDoc(doc(db, ...collectionPath, parentId, 'reactions', uid), {
+          type,
+          updatedAt: serverTimestamp()
+        });
+        return { ok: true };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    clearReaction: async (collectionPath, parentId, uid) => {
+      try {
+        await deleteDoc(doc(db, ...collectionPath, parentId, 'reactions', uid));
+        return { ok: true };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+
+    // Author can edit/delete own content; group owner can delete any
+    deletePost: async (gid, pid) => {
+      try {
+        await deleteDoc(doc(db, 'groups', gid, 'posts', pid));
+        return { ok: true };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    deleteMessage: async (gid, mid) => {
+      try {
+        await deleteDoc(doc(db, 'groups', gid, 'messages', mid));
+        return { ok: true };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    updatePost: async (gid, pid, patch) => {
+      try {
+        await updateDoc(doc(db, 'groups', gid, 'posts', pid), patch);
+        return { ok: true };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    updateMessage: async (gid, mid, patch) => {
+      try {
+        await updateDoc(doc(db, 'groups', gid, 'messages', mid), patch);
+        return { ok: true };
+      } catch (e) {
         return { error: e.message };
       }
     },
@@ -2122,6 +2477,13 @@ function defaultState() {
     streak: { lastDate: null, current: 0, max: 0, days: {} },
     readTime: {},
     updatedAt: 0,
+    // v2 community: cached locally for fast renders, source of truth lives in /profiles & /groups
+    community: {
+      profile: null,            // { displayName, bio, level, favoriteBooks, joinedAt }
+      memberships: {},          // { [gid]: { role, joinedAt } }
+      mutedUsers: {},           // { [uid]: true } — local mute, doesn't sync
+      lastSeen: {},             // { [gid]: timestamp } — for "new posts since you last visited"
+    },
   };
 }
 function loadState() {
@@ -2564,11 +2926,53 @@ function setupAuthListener() {
     } else {
       currentUser = null;
       initialSyncDone = false;
+      // Clear cached community profile when signed out
+      if (state.community) state.community.profile = null;
     }
     authReady = true;
-    if (currentUser) reconcileWithRemote();
-    else render();
+    if (currentUser) {
+      reconcileWithRemote();
+      loadCommunityProfile();
+    } else {
+      render();
+    }
   });
+}
+
+// Load (or refresh) the user's public profile from /profiles/{uid}
+async function loadCommunityProfile() {
+  if (!currentUser || !window.bsCommunityDb?.available) return;
+  const profile = await window.bsCommunityDb.loadProfile(currentUser.uid);
+  if (!state.community) state.community = defaultState().community;
+  state.community.profile = profile || null;
+  // Persist locally so we don't flash the setup screen on next reload before Firestore replies
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+  // Re-render only if user is currently looking at a community view
+  if (view.name === 'community' || view.name === 'community-group') render();
+}
+
+async function saveCommunityProfile(patch) {
+  if (!currentUser || !window.bsCommunityDb?.available) {
+    return { error: 'Sign in required.' };
+  }
+  const merged = { ...(state.community.profile || {}), ...patch };
+  // Trim and validate
+  if (!merged.displayName || merged.displayName.trim().length < 2) {
+    return { error: 'Display name must be at least 2 characters.' };
+  }
+  merged.displayName = merged.displayName.trim().slice(0, 32);
+  if (merged.bio) merged.bio = merged.bio.slice(0, 280);
+  if (!['first-time', 'going-deeper', 'serious-study', 'unspecified'].includes(merged.level)) {
+    merged.level = 'unspecified';
+  }
+  if (!Array.isArray(merged.favoriteBooks)) merged.favoriteBooks = [];
+  if (!merged.joinedAt) merged.joinedAt = Date.now();
+
+  const r = await window.bsCommunityDb.saveProfile(currentUser.uid, merged);
+  if (r.error) return r;
+  state.community.profile = merged;
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+  return { ok: true };
 }
 
 async function handleSignIn(email, password) {
@@ -2629,6 +3033,7 @@ function render() {
   else if (view.name === 'search') body = renderSearch();
   else if (view.name === 'community') body = renderCommunity();
   else if (view.name === 'community-group') body = renderCommunityGroup(view.groupSlug, view.groupTab || 'discussions');
+  else if (view.name === 'community-profile') body = renderCommunityProfileSetup();
   else if (view.name === 'settings') body = renderSettings();
 
   app.innerHTML = `
@@ -2673,6 +3078,9 @@ function headerTitle() {
   if (view.name === 'community-group') {
     const g = findGroup(view.groupSlug);
     return g ? g.name : 'Group';
+  }
+  if (view.name === 'community-profile') {
+    return state.community.profile?.displayName ? 'Edit profile' : 'Set up profile';
   }
   if (view.name === 'settings') return 'Settings';
   return 'Starting with Christ';
@@ -3247,7 +3655,124 @@ function renderCore() {
 }
 
 /* =================== Community (v2) =================== */
+function renderCommunitySignIn() {
+  const isSignup = (window._communityAuthMode === 'signup');
+  const emailVal = (window._communityAuthEmail || '').replace(/"/g, '&quot;');
+  const msg = window._communityAuthMessage
+    ? `<div class="auth-${window._communityAuthMessage.type}">${escape(window._communityAuthMessage.text)}</div>`
+    : '';
+  const submitLabel = isSignup ? 'Create Account & Continue' : 'Sign In & Continue';
+  const altLink = isSignup
+    ? '<button type="button" class="auth-link" data-act="community-auth-mode" data-mode="signin">Already have an account? Sign in</button>'
+    : '<button type="button" class="auth-link" data-act="community-auth-mode" data-mode="signup">New here? Create an account</button>';
+
+  return `
+    <div class="community-gate">
+      <div class="auth-card">
+        ${ornLine()}
+        <h2>${isSignup ? 'Join the community' : 'Welcome back'}</h2>
+        <p class="lead">${isSignup
+          ? 'A free account lets you join groups, post in discussions, and chat with others reading along.'
+          : 'Sign in to access the community. The same account works for the reading app and the community.'}</p>
+        <form class="auth-form" id="community-auth-form">
+          <label for="ca-email">Email</label>
+          <input id="ca-email" type="email" autocomplete="email" required value="${emailVal}" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <label for="ca-password">Password</label>
+          <input id="ca-password" type="password" autocomplete="${isSignup?'new-password':'current-password'}" required minlength="6">
+          ${msg}
+          <button type="submit" class="btn-primary">${submitLabel}</button>
+        </form>
+        <div class="auth-footer">${altLink}</div>
+      </div>
+      <div class="community-gate-note">
+        Reading the Bible plan, your notes, and your bookmarks all keep working without an account. Sign-in is only required to join the community.
+      </div>
+    </div>
+  `;
+}
+
+function renderCommunityProfileSetup() {
+  const profile = state.community.profile || {};
+  const isEdit = !!profile.displayName;
+  const dn = (profile.displayName || '').replace(/"/g, '&quot;');
+  const bio = profile.bio || '';
+  const level = profile.level || 'unspecified';
+  const favoriteBooks = new Set(profile.favoriteBooks || []);
+  const msg = window._profileMessage
+    ? `<div class="auth-${window._profileMessage.type}">${escape(window._profileMessage.text)}</div>`
+    : '';
+
+  const bookOptions = [
+    { id: 'john', label: 'John' }, { id: 'romans', label: 'Romans' },
+    { id: 'luke', label: 'Luke' }, { id: 'acts', label: 'Acts' },
+    { id: 'genesis', label: 'Genesis' }, { id: 'exodus', label: 'Exodus' },
+    { id: 'psalms', label: 'Psalms' }, { id: 'proverbs', label: 'Proverbs' },
+    { id: 'isaiah', label: 'Isaiah' }
+  ];
+
+  return `
+    <div class="community-profile-setup">
+      <div class="reader-head">
+        ${ornLine()}
+        <h2>${isEdit ? 'Your community profile' : 'Set up your profile'}</h2>
+        <div class="sub">${isEdit
+          ? 'Edit how you appear to others in groups.'
+          : 'Pick a display name and tell others a little about where you are. Anything you skip can be filled in later.'}</div>
+      </div>
+      <form class="profile-form" id="profile-form">
+        <label for="pf-name">Display name <span class="muted">(2–32 characters; pseudonyms welcome)</span></label>
+        <input id="pf-name" name="displayName" type="text" required minlength="2" maxlength="32" value="${dn}" autocomplete="off">
+
+        <label for="pf-bio">Short bio <span class="muted">(optional, up to 280 chars)</span></label>
+        <textarea id="pf-bio" name="bio" maxlength="280" rows="3" placeholder="One line about where you are in your reading.">${escape(bio)}</textarea>
+
+        <label>Where you're at with the Bible</label>
+        <div class="level-options">
+          <label class="level-option ${level==='first-time'?'selected':''}">
+            <input type="radio" name="level" value="first-time" ${level==='first-time'?'checked':''}>
+            <span class="level-title">First time reading the Bible</span>
+          </label>
+          <label class="level-option ${level==='going-deeper'?'selected':''}">
+            <input type="radio" name="level" value="going-deeper" ${level==='going-deeper'?'checked':''}>
+            <span class="level-title">Read some, going deeper now</span>
+          </label>
+          <label class="level-option ${level==='serious-study'?'selected':''}">
+            <input type="radio" name="level" value="serious-study" ${level==='serious-study'?'checked':''}>
+            <span class="level-title">Comfortable, want serious study</span>
+          </label>
+          <label class="level-option ${level==='unspecified'?'selected':''}">
+            <input type="radio" name="level" value="unspecified" ${level==='unspecified'?'checked':''}>
+            <span class="level-title">Prefer not to say</span>
+          </label>
+        </div>
+
+        <label>Books you enjoy <span class="muted">(optional)</span></label>
+        <div class="book-tags">
+          ${bookOptions.map(b => `
+            <label class="book-tag ${favoriteBooks.has(b.id)?'selected':''}">
+              <input type="checkbox" name="favoriteBooks" value="${b.id}" ${favoriteBooks.has(b.id)?'checked':''}>
+              <span>${b.label}</span>
+            </label>
+          `).join('')}
+        </div>
+
+        ${msg}
+
+        <div class="profile-actions">
+          <button type="submit" class="btn-primary">${isEdit ? 'Save changes' : 'Save & continue'}</button>
+          ${isEdit ? '<button type="button" class="btn-secondary" data-act="community-back">Cancel</button>' : ''}
+        </div>
+      </form>
+    </div>
+  `;
+}
+
 function renderCommunity() {
+  if (!currentUser) return renderCommunitySignIn();
+  if (!state.community.profile || !state.community.profile.displayName) {
+    return renderCommunityProfileSetup();
+  }
+
   const cards = SEED_GROUPS.map(g => {
     const levelLabel = COMMUNITY_LEVEL_LABEL[g.level] || '';
     const focus = g.focusBooks && g.focusBooks.length
@@ -3265,6 +3790,21 @@ function renderCommunity() {
     `;
   }).join('');
 
+  const profile = state.community.profile;
+  const profileLevel = COMMUNITY_LEVEL_LABEL[profile?.level] || '';
+  const profileFooter = profile ? `
+    <div class="community-profile-footer">
+      <div class="cpf-left">
+        <div class="cpf-name">Signed in as <strong>${escape(profile.displayName)}</strong></div>
+        <div class="cpf-meta">${escape(profileLevel)}</div>
+      </div>
+      <div class="cpf-right">
+        <button class="auth-link" data-act="edit-profile">Edit profile</button>
+        <button class="auth-link" data-act="community-sign-out">Sign out</button>
+      </div>
+    </div>
+  ` : '';
+
   return `
     <div class="community">
       <div class="reader-head">
@@ -3277,13 +3817,18 @@ function renderCommunity() {
       </div>
       <div class="community-list">${cards}</div>
       <div class="community-footnote">
-        Posting and chat are coming soon — for now you can browse the groups and read what each one is about.
+        Joining, posting, and chat are landing piece by piece. Profiles work now — groups, posts, and chat come next.
       </div>
+      ${profileFooter}
     </div>
   `;
 }
 
 function renderCommunityGroup(slug, tab) {
+  if (!currentUser) return renderCommunitySignIn();
+  if (!state.community.profile || !state.community.profile.displayName) {
+    return renderCommunityProfileSetup();
+  }
   const g = findGroup(slug);
   if (!g) return `<div class="content"><p>Group not found.</p></div>`;
   const levelLabel = COMMUNITY_LEVEL_LABEL[g.level] || '';
@@ -3525,6 +4070,23 @@ function onClick(e) {
   if (act === 'community') return setView({ name: 'community' });
   if (act === 'open-group') return setView({ name: 'community-group', groupSlug: t.dataset.slug, groupTab: 'discussions' });
   if (act === 'group-tab') return setView({ name: 'community-group', groupSlug: t.dataset.slug, groupTab: t.dataset.tab });
+  if (act === 'community-auth-mode') {
+    window._communityAuthMode = t.dataset.mode;
+    window._communityAuthMessage = null;
+    return render();
+  }
+  if (act === 'community-back') return setView({ name: 'community' });
+  if (act === 'edit-profile') {
+    // Force the profile setup screen even if profile exists
+    state.community.profile = state.community.profile || {};
+    return setView({ name: 'community-profile' });
+  }
+  if (act === 'community-sign-out') {
+    if (confirm('Sign out? You\'ll keep your reading and notes on this device, but you\'ll need to sign in to see the community again.')) {
+      window.bsAuth.signOut();
+    }
+    return;
+  }
   if (act === 'open') return setView({ name: 'chapter', phaseId: t.dataset.phase, chapterId: t.dataset.chapter });
   if (act === 'open-bm') {
     const phaseInfo = findItemAndPhase(t.dataset.id);
@@ -3707,6 +4269,52 @@ function onSubmit(e) {
     if (authMode === 'signup') return handleSignUp(email, password);
     if (authMode === 'forgot') return handleSendReset(email);
     return handleSignIn(email, password);
+  }
+
+  // Community sign-in form (entry into community without leaving the community view)
+  if (e.target.id === 'community-auth-form') {
+    e.preventDefault();
+    const email = (document.getElementById('ca-email')?.value || '').trim();
+    const password = document.getElementById('ca-password')?.value || '';
+    window._communityAuthEmail = email;
+    window._communityAuthMessage = null;
+    if (!email || !password) {
+      window._communityAuthMessage = { type: 'error', text: 'Enter email and password.' };
+      return render();
+    }
+    const mode = window._communityAuthMode || 'signin';
+    const fn = mode === 'signup' ? window.bsAuth.signUp : window.bsAuth.signIn;
+    fn(email, password).then((r) => {
+      if (r.error) {
+        window._communityAuthMessage = { type: 'error', text: r.error };
+        render();
+      }
+      // On success, the auth listener will fire; loadCommunityProfile() and render() take over.
+    });
+    return;
+  }
+
+  // Profile create/edit form
+  if (e.target.id === 'profile-form') {
+    e.preventDefault();
+    const form = e.target;
+    const displayName = form.elements.displayName.value;
+    const bio = form.elements.bio.value;
+    const level = form.elements.level.value;
+    const favoriteBooks = Array.from(form.querySelectorAll('input[name="favoriteBooks"]:checked')).map(cb => cb.value);
+    window._profileMessage = null;
+    saveCommunityProfile({ displayName, bio, level, favoriteBooks }).then((r) => {
+      if (r.error) {
+        window._profileMessage = { type: 'error', text: r.error };
+        render();
+        return;
+      }
+      window._profileMessage = { type: 'success', text: 'Profile saved.' };
+      // After first-time setup, drop them into the community list
+      if (view.name === 'community') render();
+      else setView({ name: 'community' });
+    });
+    return;
   }
 }
 
