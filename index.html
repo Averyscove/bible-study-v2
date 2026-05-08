@@ -2173,6 +2173,149 @@
   .reply-composer textarea:focus { outline: none; }
   .reply-composer .composer-actions { padding-top: 6px; border: none; }
   .reply-composer .btn-primary { padding: 6px 14px; font-size: 13.5px; }
+
+  /* Share-to-group panel inside the chapter view */
+  .share-panel {
+    margin: 18px 0 14px;
+    border: 1px solid var(--rule, rgba(0,0,0,0.12));
+    border-radius: 10px;
+    background: var(--surface, transparent);
+  }
+  .share-panel.collapsed {
+    background: transparent;
+    border-style: dashed;
+  }
+  .share-panel-empty {
+    padding: 14px 16px;
+    font-family: var(--serif);
+    font-style: italic;
+    color: var(--ink-faint);
+    font-size: 13.5px;
+    text-align: center;
+  }
+  .share-toggle {
+    width: 100%;
+    background: transparent;
+    border: none;
+    padding: 14px 16px;
+    cursor: pointer;
+    color: var(--ink-soft, var(--ink));
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+  }
+  .share-toggle:hover { color: var(--ink); }
+  .share-toggle svg { color: currentColor; }
+
+  .share-panel.open {
+    padding: 14px 16px 16px;
+  }
+  .share-panel-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 10px;
+  }
+  .share-panel-title {
+    font-family: var(--serif);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .share-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .share-form label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: -6px;
+  }
+  .share-select {
+    border: 1px solid var(--rule, rgba(0,0,0,0.18));
+    background: var(--surface, transparent);
+    color: var(--ink);
+    border-radius: 8px;
+    padding: 9px 12px;
+    font: inherit;
+    font-size: 14.5px;
+  }
+  .share-form textarea {
+    border: 1px solid var(--rule, rgba(0,0,0,0.18));
+    background: var(--surface, transparent);
+    color: var(--ink);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font: inherit;
+    font-family: var(--serif);
+    font-size: 15px;
+    line-height: 1.55;
+    resize: vertical;
+  }
+  .share-form textarea:focus,
+  .share-form select:focus {
+    outline: 2px solid var(--ink-faint);
+    outline-offset: 1px;
+  }
+
+  .share-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+  .share-chips-label {
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    margin-right: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .share-chip {
+    background: var(--surface-2, rgba(0,0,0,0.04));
+    border: 1px solid var(--rule, rgba(0,0,0,0.15));
+    border-radius: 999px;
+    padding: 5px 12px;
+    font-size: 12.5px;
+    cursor: pointer;
+    color: var(--ink);
+    font-family: inherit;
+  }
+  .share-chip:hover {
+    background: var(--ink);
+    color: var(--paper, #fbf4e3);
+    border-color: var(--ink);
+  }
+
+  .share-hint {
+    font-size: 12px;
+    color: var(--ink-faint);
+    font-style: italic;
+  }
+  .share-hint strong {
+    font-style: normal;
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  .share-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding-top: 4px;
+  }
+  .share-actions .btn-primary {
+    padding: 8px 18px;
+    font-size: 14px;
+  }
 </style>
 </head>
 <body>
@@ -3334,15 +3477,30 @@ function setupAuthListener() {
 }
 
 // Load (or refresh) the user's public profile from /profiles/{uid}
+// Also pulls down which groups the user belongs to so "Share to a group"
+// can offer the right options anywhere in the app.
 async function loadCommunityProfile() {
   if (!currentUser || !window.bsCommunityDb?.available) return;
-  const profile = await window.bsCommunityDb.loadProfile(currentUser.uid);
+  const [profile, memberships] = await Promise.all([
+    window.bsCommunityDb.loadProfile(currentUser.uid),
+    window.bsCommunityDb.listMyMemberships(currentUser.uid)
+  ]);
   if (!state.community) state.community = defaultState().community;
   state.community.profile = profile || null;
+  state.community.memberships = {};
+  for (const m of memberships || []) {
+    state.community.memberships[m.gid] = { role: m.role, joinedAt: Date.now() };
+  }
   // Persist locally so we don't flash the setup screen on next reload before Firestore replies
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
-  // Re-render only if user is currently looking at a community view
-  if (view.name === 'community' || view.name === 'community-group') render();
+  // Re-render any view that depends on membership (chapter share, community list, group page)
+  render();
+}
+
+// Returns the list of groups the current user has joined, in display order.
+function userJoinedGroups() {
+  const memberships = state.community?.memberships || {};
+  return SEED_GROUPS.filter(g => !!memberships[g.slug]);
 }
 
 async function saveCommunityProfile(patch) {
@@ -3761,11 +3919,80 @@ function renderChapter(phaseId, chapterId) {
         <textarea data-note="${chapterId}" data-field="prayer" placeholder="In response to what you read…">${escape(notes.prayer || '')}</textarea>
         <div class="save-hint">Tap a verse to bookmark it · Notes save automatically</div>
       </div>
+      ${renderChapterShare(chapterId, item, notes)}
       <div class="complete-bar">
         <button class="btn-primary ${done?'done-state':''}" data-act="toggle-done" data-chapter="${chapterId}">
           ${done ? '✓ Completed' : 'Mark complete'}${next && !done ? ' · Next' : ''}
         </button>
       </div>
+    </div>
+  `;
+}
+
+// "Share to a group" panel rendered below the reflection notes. Only shown if
+// the user is signed in, has a profile, and belongs to at least one group.
+function renderChapterShare(chapterId, item, notes) {
+  if (!currentUser || !state.community?.profile?.displayName) return '';
+  const joined = userJoinedGroups();
+  if (joined.length === 0) {
+    return `
+      <div class="share-panel collapsed">
+        <div class="share-panel-empty">
+          Want to share a thought from this chapter? <button class="auth-link" data-act="community">Browse groups</button> and join one — then a "Share to a group" button shows up here.
+        </div>
+      </div>
+    `;
+  }
+
+  const isOpen = window._openShareTarget === chapterId;
+  if (!isOpen) {
+    return `
+      <div class="share-panel collapsed">
+        <button class="share-toggle" data-act="open-share" data-chapter="${escape(chapterId)}">
+          ${iconCommunity}<span>Share something with a group</span>
+        </button>
+      </div>
+    `;
+  }
+
+  // Pre-fill chips: pull non-empty reflection notes from this chapter
+  const chips = [];
+  if (notes.jesus)     chips.push({ key: 'jesus',     label: 'About Jesus',    text: notes.jesus });
+  if (notes.stood_out) chips.push({ key: 'stood_out', label: 'What stood out', text: notes.stood_out });
+  if (notes.question)  chips.push({ key: 'question',  label: 'My question',    text: notes.question });
+  if (notes.prayer)    chips.push({ key: 'prayer',    label: 'My prayer',      text: notes.prayer });
+  const chipsHtml = chips.length
+    ? `<div class="share-chips">
+         <span class="share-chips-label">Use a reflection:</span>
+         ${chips.map(c => `<button type="button" class="share-chip" data-act="share-prefill" data-text="${escape(c.text)}">${escape(c.label)}</button>`).join('')}
+       </div>`
+    : '';
+
+  // Group selector — defaults to the first joined group
+  const groupOptions = joined.map(g => `<option value="${escape(g.slug)}">${escape(g.name)}</option>`).join('');
+
+  return `
+    <div class="share-panel open">
+      <div class="share-panel-head">
+        <span class="share-panel-title">Share with a group</span>
+        <button class="auth-link" data-act="close-share">Close</button>
+      </div>
+      <form class="share-form" id="share-form" data-chapter="${escape(chapterId)}" data-chapter-title="${escape(item.title || '')}">
+        <label for="share-group">Where</label>
+        <select id="share-group" name="groupSlug" class="share-select">
+          ${groupOptions}
+        </select>
+        ${chipsHtml}
+        <label for="share-body">What you want to say</label>
+        <textarea id="share-body" name="body" rows="4" maxlength="2000" placeholder="Type a thought, question, or paste a reflection above to pre-fill." required minlength="1"></textarea>
+        <div class="share-hint">
+          The post will be tagged with <strong>${escape(item.title || chapterId)}</strong> so others know what you were reading.
+        </div>
+        <div class="share-actions">
+          <span class="composer-hint">Visible to everyone in the group.</span>
+          <button type="submit" class="btn-primary">Share</button>
+        </div>
+      </form>
     </div>
   `;
 }
@@ -4697,6 +4924,23 @@ function onClick(e) {
     });
     return;
   }
+  if (act === 'open-share') {
+    window._openShareTarget = t.dataset.chapter;
+    return render();
+  }
+  if (act === 'close-share') {
+    window._openShareTarget = null;
+    return render();
+  }
+  if (act === 'share-prefill') {
+    const ta = document.getElementById('share-body');
+    if (ta) {
+      ta.value = t.dataset.text || '';
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }
+    return;
+  }
   if (act === 'open') return setView({ name: 'chapter', phaseId: t.dataset.phase, chapterId: t.dataset.chapter });
   if (act === 'open-bm') {
     const phaseInfo = findItemAndPhase(t.dataset.id);
@@ -4926,6 +5170,37 @@ function onSubmit(e) {
       form.elements.body.value = '';
       toast('Posted ✓');
       // The onSnapshot listener will re-render with the new post
+    });
+    return;
+  }
+
+  // Share-to-a-group form (in chapter view)
+  if (e.target.id === 'share-form') {
+    e.preventDefault();
+    const form = e.target;
+    const chapterId = form.dataset.chapter;
+    const chapterTitle = form.dataset.chapterTitle;
+    const groupSlug = form.elements.groupSlug.value;
+    const body = form.elements.body.value.trim();
+    if (!body || !groupSlug) return;
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Sharing…'; }
+    window.bsCommunityDb.createPost(groupSlug, {
+      authorUid: currentUser.uid,
+      authorName: state.community.profile?.displayName || 'Unknown',
+      body,
+      chapterId,
+      verseRef: chapterTitle || ''
+    }).then((r) => {
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Share'; }
+      if (r.error) {
+        toast('Could not share: ' + r.error);
+        return;
+      }
+      window._openShareTarget = null;
+      toast('Shared with the group ✓');
+      // Drop them into the group so they can see their post land in real-time
+      setView({ name: 'community-group', groupSlug, groupTab: 'discussions' });
     });
     return;
   }
