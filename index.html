@@ -1887,6 +1887,120 @@
     display: flex;
     gap: 14px;
   }
+
+  /* Group page — join strip */
+  .group-join-strip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--rule, rgba(0,0,0,0.12));
+    border-radius: 8px;
+    margin-bottom: 14px;
+    background: var(--surface-2, rgba(0,0,0,0.02));
+    flex-wrap: wrap;
+  }
+  .gjs-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13.5px;
+    color: var(--ink-soft, var(--ink));
+  }
+  .gjs-count { font-weight: 500; }
+  .gjs-state {
+    font-size: 11.5px;
+    padding: 3px 9px;
+    background: var(--ink);
+    color: var(--paper, #fbf4e3);
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .gjs-btn {
+    padding: 8px 16px;
+    font-size: 14px;
+    border-radius: 8px;
+  }
+
+  /* Post composer */
+  .post-composer {
+    border: 1px solid var(--rule, rgba(0,0,0,0.15));
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 16px;
+    background: var(--surface, transparent);
+  }
+  .post-composer textarea {
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 15px;
+    line-height: 1.5;
+    padding: 6px 4px;
+    resize: vertical;
+    box-sizing: border-box;
+    min-height: 70px;
+  }
+  .post-composer textarea:focus { outline: none; }
+  .composer-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-top: 8px;
+    border-top: 1px solid var(--rule, rgba(0,0,0,0.08));
+  }
+  .composer-hint {
+    font-size: 12px;
+    color: var(--ink-faint);
+    font-style: italic;
+  }
+  .composer-actions .btn-primary {
+    padding: 7px 18px;
+    font-size: 14px;
+  }
+
+  /* Soft empty state for "no posts yet" */
+  .group-empty-soft {
+    border-style: dashed;
+    background: transparent;
+  }
+
+  /* Section divider between live posts and seeded content */
+  .group-section-divider {
+    text-align: center;
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-faint);
+    margin: 28px 0 14px;
+    position: relative;
+  }
+  .group-section-divider::before,
+  .group-section-divider::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    width: calc(50% - 90px);
+    height: 1px;
+    background: var(--rule, rgba(0,0,0,0.12));
+  }
+  .group-section-divider::before { left: 0; }
+  .group-section-divider::after  { right: 0; }
+
+  /* Author actions on their own posts */
+  .group-post-actions {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--rule, rgba(0,0,0,0.06));
+    display: flex;
+    gap: 14px;
+    justify-content: flex-end;
+  }
 </style>
 </head>
 <body>
@@ -2656,10 +2770,69 @@ function setView(v) {
   tts.stop();
   // Stop reading-time tracker
   if (readingTimer.chapterId && readingTimer.chapterId !== v.chapterId) readingTimer.stop();
+  // Tear down community listeners when leaving a group view
+  if (v.name !== 'community-group' && communityListeners.size > 0) {
+    teardownCommunityListeners();
+  }
   render();
   window.scrollTo(0, 0);
   // Start tracker if we entered a chapter
   if (v.chapterId) readingTimer.start(v.chapterId);
+  // Spin up community listeners on group entry
+  if (v.name === 'community-group' && currentUser && state.community.profile?.displayName) {
+    setupCommunityListeners(v.groupSlug);
+  }
+}
+
+/* =================== Community listener lifecycle =================== */
+// Active onSnapshot unsubscribe functions, keyed by purpose ('posts:gid', 'messages:gid', etc.)
+const communityListeners = new Map();
+// Real-time data caches keyed similarly
+const communityCache = {
+  posts: {},      // { [gid]: [...post docs] }
+  messages: {},   // { [gid]: [...message docs] }
+  memberCounts: {} // { [gid]: number }
+};
+
+function teardownCommunityListeners() {
+  for (const [, unsub] of communityListeners) {
+    try { unsub(); } catch (e) {}
+  }
+  communityListeners.clear();
+}
+
+async function setupCommunityListeners(gid) {
+  if (!gid || !window.bsCommunityDb?.available) return;
+  // If we already have listeners for this gid, nothing to do
+  if (communityListeners.has(`posts:${gid}`)) return;
+  teardownCommunityListeners();
+
+  // Listen to discussion posts
+  const unsubPosts = window.bsCommunityDb.listenToPosts(gid, (posts) => {
+    communityCache.posts[gid] = posts;
+    if (view.name === 'community-group' && view.groupSlug === gid) render();
+  });
+  communityListeners.set(`posts:${gid}`, unsubPosts);
+
+  // Refresh member count and current user's membership status
+  refreshGroupMembership(gid);
+}
+
+async function refreshGroupMembership(gid) {
+  if (!currentUser || !window.bsCommunityDb?.available) return;
+  const [count, isMember] = await Promise.all([
+    window.bsCommunityDb.countMembers(gid),
+    window.bsCommunityDb.isMember(gid, currentUser.uid)
+  ]);
+  communityCache.memberCounts[gid] = count;
+  if (!state.community.memberships) state.community.memberships = {};
+  if (isMember) {
+    state.community.memberships[gid] = state.community.memberships[gid] || { role: 'member', joinedAt: Date.now() };
+  } else {
+    delete state.community.memberships[gid];
+  }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+  if (view.name === 'community-group' && view.groupSlug === gid) render();
 }
 
 /* =================== Helpers =================== */
@@ -3833,6 +4006,25 @@ function renderCommunityGroup(slug, tab) {
   if (!g) return `<div class="content"><p>Group not found.</p></div>`;
   const levelLabel = COMMUNITY_LEVEL_LABEL[g.level] || '';
   const tabKey = (tab === 'chat') ? 'chat' : 'discussions';
+  const isMember = !!(state.community.memberships && state.community.memberships[slug]);
+  const memberCount = communityCache.memberCounts[slug];
+  const memberCountText = (memberCount === undefined)
+    ? '…'
+    : (memberCount === 1 ? '1 member' : `${memberCount} members`);
+
+  // Join / leave strip — sits above the tabs
+  const joinStrip = `
+    <div class="group-join-strip">
+      <div class="gjs-meta">
+        <span class="gjs-count">👥 ${memberCountText}</span>
+        ${isMember ? '<span class="gjs-state">You\'re in</span>' : ''}
+      </div>
+      ${isMember
+        ? `<button class="btn-secondary gjs-btn" data-act="leave-group" data-slug="${escape(slug)}">Leave group</button>`
+        : `<button class="btn-primary gjs-btn" data-act="join-group" data-slug="${escape(slug)}">Join group</button>`
+      }
+    </div>
+  `;
 
   const tabsHtml = `
     <nav class="group-tabs">
@@ -3844,7 +4036,7 @@ function renderCommunityGroup(slug, tab) {
   let body = '';
   if (tabKey === 'discussions') {
     const welcome = g.welcomePost;
-    const startersHtml = g.starters.map((body, i) => `
+    const startersHtml = g.starters.map((body) => `
       <article class="group-post">
         <div class="group-post-head">
           <span class="group-post-author">${escape(COMMUNITY_TEAM_NAME)}</span>
@@ -3854,7 +4046,41 @@ function renderCommunityGroup(slug, tab) {
       </article>
     `).join('');
 
+    // Real posts from Firestore (newest first; we render them above the seed pinned/starters)
+    const realPosts = communityCache.posts[slug] || [];
+    const realPostsHtml = realPosts.map(p => {
+      const ts = p.createdAt?.toDate ? p.createdAt.toDate() : null;
+      const when = ts ? formatTimeAgo(ts.getTime()) : 'just now';
+      const isOwn = p.authorUid === currentUser?.uid;
+      return `
+        <article class="group-post" data-pid="${escape(p.id)}">
+          <div class="group-post-head">
+            <span class="group-post-author">${escape(p.authorName || 'Unknown')}</span>
+            <span class="group-post-meta">${escape(when)}${isOwn ? ' · your post' : ''}</span>
+          </div>
+          <div class="group-post-body">${escape(p.body).replace(/\n/g, '<br>')}</div>
+          ${isOwn ? `<div class="group-post-actions"><button class="auth-link" data-act="delete-post" data-slug="${escape(slug)}" data-pid="${escape(p.id)}">Delete</button></div>` : ''}
+        </article>
+      `;
+    }).join('');
+
+    // Composer — shown only to members
+    const composer = isMember ? `
+      <form class="post-composer" id="post-composer" data-slug="${escape(slug)}">
+        <textarea name="body" rows="3" maxlength="2000" placeholder="Share what stood out, ask a question, start a conversation. Up to 2000 characters." required minlength="1"></textarea>
+        <div class="composer-actions">
+          <span class="composer-hint">Posts are visible to everyone in this group.</span>
+          <button type="submit" class="btn-primary">Post</button>
+        </div>
+      </form>
+    ` : `
+      <div class="group-empty-state">Join the group to post in this discussion.</div>
+    `;
+
     body = `
+      ${composer}
+      ${realPostsHtml || (isMember ? '<div class="group-empty-state group-empty-soft">No posts yet. Start the first conversation.</div>' : '')}
+      <div class="group-section-divider">Seeded by ${escape(COMMUNITY_TEAM_NAME)}</div>
       <article class="group-post pinned">
         <div class="group-post-head">
           <span class="group-post-author">${escape(COMMUNITY_TEAM_NAME)}</span>
@@ -3863,9 +4089,6 @@ function renderCommunityGroup(slug, tab) {
         <div class="group-post-body">${escape(welcome.body).replace(/\n/g, '<br>')}</div>
       </article>
       ${startersHtml}
-      <div class="group-empty-state">
-        Replies and your own posts will land here once posting is enabled.
-      </div>
     `;
   } else {
     body = `
@@ -3875,7 +4098,7 @@ function renderCommunityGroup(slug, tab) {
           <div class="group-chat-body">${escape(g.chatOpener)}</div>
         </div>
         <div class="group-empty-state">
-          Live chat is coming next. For now this is what you'll see when you walk in.
+          Live chat is landing in the next build step. For now this is what you'll see when you walk in.
         </div>
       </div>
     `;
@@ -3891,6 +4114,7 @@ function renderCommunityGroup(slug, tab) {
         <div class="sub">${escape(g.tagline)}</div>
       </div>
       <div class="group-description">${escape(g.description)}</div>
+      ${joinStrip}
       ${tabsHtml}
       <div class="group-tab-content">${body}</div>
     </div>
@@ -4085,6 +4309,52 @@ function onClick(e) {
     if (confirm('Sign out? You\'ll keep your reading and notes on this device, but you\'ll need to sign in to see the community again.')) {
       window.bsAuth.signOut();
     }
+    return;
+  }
+  if (act === 'join-group') {
+    const slug = t.dataset.slug;
+    const dn = state.community.profile?.displayName || '';
+    t.disabled = true;
+    window.bsCommunityDb.joinGroup(slug, currentUser.uid, dn).then((r) => {
+      if (r.error) {
+        toast('Could not join: ' + r.error);
+        t.disabled = false;
+        return;
+      }
+      // Optimistic local cache update
+      if (!state.community.memberships) state.community.memberships = {};
+      state.community.memberships[slug] = { role: 'member', joinedAt: Date.now() };
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+      refreshGroupMembership(slug);
+      toast('Joined ✓');
+    });
+    return;
+  }
+  if (act === 'leave-group') {
+    const slug = t.dataset.slug;
+    if (!confirm('Leave this group? Your past posts stay; you stop seeing the group in your list.')) return;
+    t.disabled = true;
+    window.bsCommunityDb.leaveGroup(slug, currentUser.uid).then((r) => {
+      if (r.error) {
+        toast('Could not leave: ' + r.error);
+        t.disabled = false;
+        return;
+      }
+      if (state.community.memberships) delete state.community.memberships[slug];
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+      refreshGroupMembership(slug);
+      toast('Left the group');
+    });
+    return;
+  }
+  if (act === 'delete-post') {
+    const slug = t.dataset.slug;
+    const pid = t.dataset.pid;
+    if (!confirm('Delete this post? This cannot be undone.')) return;
+    window.bsCommunityDb.deletePost(slug, pid).then((r) => {
+      if (r.error) toast('Could not delete: ' + r.error);
+      else toast('Post deleted');
+    });
     return;
   }
   if (act === 'open') return setView({ name: 'chapter', phaseId: t.dataset.phase, chapterId: t.dataset.chapter });
@@ -4290,6 +4560,32 @@ function onSubmit(e) {
         render();
       }
       // On success, the auth listener will fire; loadCommunityProfile() and render() take over.
+    });
+    return;
+  }
+
+  // Discussion post composer (community group page)
+  if (e.target.id === 'post-composer') {
+    e.preventDefault();
+    const form = e.target;
+    const slug = form.dataset.slug;
+    const body = form.elements.body.value.trim();
+    if (!body) return;
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Posting…'; }
+    window.bsCommunityDb.createPost(slug, {
+      authorUid: currentUser.uid,
+      authorName: state.community.profile?.displayName || 'Unknown',
+      body
+    }).then((r) => {
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Post'; }
+      if (r.error) {
+        toast('Could not post: ' + r.error);
+        return;
+      }
+      form.elements.body.value = '';
+      toast('Posted ✓');
+      // The onSnapshot listener will re-render with the new post
     });
     return;
   }
